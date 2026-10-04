@@ -6,7 +6,6 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://reroute:local-only-change-me@localhost:5432/reroute",

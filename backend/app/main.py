@@ -18,6 +18,13 @@ async def lifespan(_: FastAPI):
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE IF EXISTS routes ALTER COLUMN shape "
+                "TYPE geometry(Geometry, 4326) USING shape::geometry(Geometry, 4326)"
+            )
+        )
     with SessionLocal() as session:
         seed_demo_network(session)
     yield

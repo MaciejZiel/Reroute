@@ -76,7 +76,13 @@ export default function MapCanvas({
     map.addControl(new NavigationControl({ showCompass: false }), "top-right");
     map.addControl(new AttributionControl({ compact: true }), "bottom-right");
     map.on("load", () => {
-      map.addSource("network", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("network", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        cluster: true,
+        clusterRadius: 42,
+        clusterMaxZoom: 14,
+      });
       map.addSource("vehicles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
         id: "routes",
@@ -91,10 +97,34 @@ export default function MapCanvas({
         },
       });
       map.addLayer({
+        id: "stop-clusters",
+        type: "circle",
+        source: "network",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": "#233c33",
+          "circle-radius": ["step", ["get", "point_count"], 13, 100, 17, 500, 21],
+          "circle-stroke-color": "#8cdec1",
+          "circle-stroke-width": 1.5,
+        },
+      });
+      map.addLayer({
+        id: "stop-cluster-count",
+        type: "symbol",
+        source: "network",
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+          "text-size": 10,
+        },
+        paint: { "text-color": "#e8ece5" },
+      });
+      map.addLayer({
         id: "stops",
         type: "circle",
         source: "network",
-        filter: ["==", ["get", "entity_type"], "stop"],
+        filter: ["all", ["==", ["get", "entity_type"], "stop"], ["!", ["has", "point_count"]]],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2, 14, 5],
           "circle-color": "#f3ebd7",
@@ -111,6 +141,8 @@ export default function MapCanvas({
           "circle-color": ["match", ["get", "mode"], "tram", "#ff765e", "#81dbc0"],
           "circle-stroke-color": "#172321",
           "circle-stroke-width": 2,
+          "circle-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.42, 1],
+          "circle-stroke-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.48, 1],
         },
       });
       map.addLayer({
@@ -139,8 +171,18 @@ export default function MapCanvas({
         const next = selectionFromFeature(properties, coordinates);
         if (next) onSelectRef.current(next);
       });
-      map.on("mouseenter", ["stops", "routes"], () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", ["stops", "routes"], () => { map.getCanvas().style.cursor = ""; });
+      map.on("click", "stop-clusters", async (event: MapMouseEvent) => {
+        const feature = map.queryRenderedFeatures(event.point, { layers: ["stop-clusters"] })[0];
+        const source = map.getSource("network") as GeoJSONSource | undefined;
+        if (!feature || !source) return;
+        const clusterId = Number(feature.properties?.cluster_id);
+        const zoom = await source.getClusterExpansionZoom(clusterId);
+        if (feature.geometry.type === "Point") {
+          map.easeTo({ center: feature.geometry.coordinates as [number, number], zoom });
+        }
+      });
+      map.on("mouseenter", ["stops", "stop-clusters", "routes"], () => { map.getCanvas().style.cursor = "pointer"; });
+      map.on("mouseleave", ["stops", "stop-clusters", "routes"], () => { map.getCanvas().style.cursor = ""; });
     });
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };

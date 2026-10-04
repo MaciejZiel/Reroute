@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from .models import Route, RouteStop, Stop, VehiclePosition
 
-
 STOPS = [
     ("centrum", "Centrum", 52.2298, 21.0118),
     ("politechnika", "Politechnika", 52.2209, 21.0108),
@@ -30,21 +29,42 @@ ROUTES = [
         "short_name": "9",
         "long_name": "Gocławek — P+R Aleja Krakowska",
         "mode": "tram",
-        "stops": ["centrum", "politechnika", "pole-mokotowskie", "raclawicka", "wierzbno", "wil-anowska"],
+        "stops": [
+            "centrum",
+            "politechnika",
+            "pole-mokotowskie",
+            "raclawicka",
+            "wierzbno",
+            "wil-anowska",
+        ],
     },
     {
         "id": "demo-tram-7",
         "short_name": "7",
         "long_name": "P+R Aleja Krakowska — P+R Wiatraczna",
         "mode": "tram",
-        "stops": ["nowy-swiat", "foksal", "muzeum-narodowe", "centrum", "most-poniatowskiego", "stadion"],
+        "stops": [
+            "nowy-swiat",
+            "foksal",
+            "muzeum-narodowe",
+            "centrum",
+            "most-poniatowskiego",
+            "stadion",
+        ],
     },
     {
         "id": "demo-bus-175",
         "short_name": "175",
         "long_name": "Lotnisko Chopina — Pl. Piłsudskiego",
         "mode": "bus",
-        "stops": ["wil-anowska", "wierzbno", "raclawicka", "pole-mokotowskie", "politechnika", "centrum"],
+        "stops": [
+            "wil-anowska",
+            "wierzbno",
+            "raclawicka",
+            "pole-mokotowskie",
+            "politechnika",
+            "centrum",
+        ],
     },
 ]
 

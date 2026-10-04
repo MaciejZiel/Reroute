@@ -79,13 +79,17 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  const isLive = network?.data_mode === "live" || vehicles?.data_mode === "live";
+  const hasLiveVehicles = vehicles?.data_mode === "live";
+  const hasLiveSchedule = network?.data_mode === "live";
+  const isLive = hasLiveVehicles || hasLiveSchedule;
+  const feedLabel = hasLiveVehicles ? t("live") : hasLiveSchedule ? t("scheduleOnly") : t("demo");
+  const sourceNotices = [...new Set([network?.notice, vehicles?.notice].filter(Boolean))].join(" ");
   return (
     <main className="app-shell">
       <header className="topbar">
         <a className="brand" href="#" aria-label="Reroute home"><span className="brand-mark"><Icon name="route" size={21} /></span><span>reroute<span className="brand-period">.</span></span></a>
         <div className="topbar-center"><span className="eyebrow">{t("eyebrow")}</span><span className="city-pill"><span className="city-dot"/>Warszawa</span></div>
-        <div className="topbar-actions"><div className={`feed-status ${isLive ? "is-live" : "is-demo"}`}><span className="pulse-dot" />{isLive ? t("live") : t("demo")}</div><button className="language-toggle" onClick={() => setLanguage(language === "pl" ? "en" : "pl")} aria-label="Change language">{language === "pl" ? "EN" : "PL"}<span>⌄</span></button></div>
+        <div className="topbar-actions"><div className={`feed-status ${isLive ? "is-live" : "is-demo"}`}><span className="pulse-dot" />{feedLabel}</div><button className="language-toggle" onClick={() => setLanguage(language === "pl" ? "en" : "pl")} aria-label="Change language">{language === "pl" ? "EN" : "PL"}<span>⌄</span></button></div>
       </header>
 
       <section className="workspace">
@@ -123,7 +127,7 @@ export default function App() {
           <div className="impact-section"><div className="impact-heading"><span className="section-kicker">{t("impact")}</span><span className={`impact-status ${simulation ? "calculated" : ""}`}><i/>{simulation ? t("calculated") : t("awaiting")}</span></div>
             {simulation ? <div className="results"><div className="impact-score"><span>{t("impactScore")}</span><strong>{simulation.impact_score}<small> pts</small></strong><p>{t("scoreInfo")}</p></div><div className="result-metrics"><div><span>{t("affectedRoutes")}</span><strong>{simulation.affected_routes.length.toString().padStart(2, "0")}</strong></div><div><span>{t("affectedStops")}</span><strong>{simulation.affected_stops.length.toString().padStart(2, "0")}</strong></div></div><div className="affected-lines">{simulation.affected_routes.map((route) => <span key={route.id} className={route.mode}>{route.label}</span>)}</div><p className="estimate-note">{simulation.notice}</p></div> : <div className="impact-empty"><span className="impact-orbit"><i/><b/></span><p>{t("impactEmpty")}</p></div>}
           </div>
-          <div className="data-footer"><div className="data-footer-head"><span className="section-kicker">{t("sources")}</span><span className="source-count">03 {t("sourcesCount")}</span></div><p>{t("attribution")}</p><small>{t("sourceInfo")}</small><div className="data-source-chips"><span>WARSAW API</span><span>GTFS</span><span>OPENSTREETMAP</span></div></div>
+          <div className="data-footer"><div className="data-footer-head"><span className="section-kicker">{t("sources")}</span><span className="source-count">03 {t("sourcesCount")}</span></div><p>{t("attribution")}</p><details className="source-details"><summary>{t("sourceDetails")}</summary><small>{sourceNotices || t("sourceInfo")}</small></details><div className="data-source-chips"><span>WARSAW API</span><span>GTFS</span><span>OPENSTREETMAP</span></div></div>
         </aside>
       </section>
     </main>

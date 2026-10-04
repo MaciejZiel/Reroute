@@ -19,9 +19,9 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://reroute:local-only-change-me@db:5432/reroute}
-      WARSAW_API_KEY: ${WARSAW_API_KEY:-}
-      WARSAW_API_URL: ${WARSAW_API_URL:-https://api.um.warszawa.pl/api/action/busestrams_get/}
       GTFS_URL: ${GTFS_URL:-https://mkuran.pl/gtfs/warsaw.zip}
+      GTFS_RT_URL: ${GTFS_RT_URL:-https://mkuran.pl/gtfs/warsaw/vehicles.pb}
+      DATA_DIR: /app/data
       CORS_ORIGINS: http://localhost:5173
     ports:
       - "8000:8000"
