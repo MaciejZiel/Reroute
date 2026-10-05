@@ -31,6 +31,22 @@ export interface AffectedRoute {
   affected_stops: number;
 }
 
+export interface AlternativeRoute {
+  id: string;
+  label: string;
+  mode: string;
+  shared_stops: number;
+}
+
+export interface AlternativeStop {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distance_m: number;
+  routes: string[];
+}
+
 export interface SimulationResult {
   id: string;
   target_type: string;
@@ -39,6 +55,9 @@ export interface SimulationResult {
   duration_minutes: number;
   affected_routes: AffectedRoute[];
   affected_stops: string[];
+  alternative_routes: AlternativeRoute[];
+  alternative_stops: AlternativeStop[];
+  affected_stop_count: number;
   impact_score: number;
   data_mode: DataMode;
   notice: string;

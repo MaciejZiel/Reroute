@@ -41,6 +41,22 @@ class AffectedRoute(BaseModel):
     affected_stops: int
 
 
+class AlternativeRoute(BaseModel):
+    id: str
+    label: str
+    mode: str
+    shared_stops: int
+
+
+class AlternativeStop(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    distance_m: int
+    routes: list[str]
+
+
 class SimulationResponse(BaseModel):
     id: str
     target_type: str
@@ -49,6 +65,9 @@ class SimulationResponse(BaseModel):
     duration_minutes: int
     affected_routes: list[AffectedRoute]
     affected_stops: list[str]
+    alternative_routes: list[AlternativeRoute]
+    alternative_stops: list[AlternativeStop]
+    affected_stop_count: int
     impact_score: int
     data_mode: Literal["live", "demo"]
     notice: str

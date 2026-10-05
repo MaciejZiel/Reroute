@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapCanvas from "./MapCanvas";
 import { fetchNetwork, fetchVehicles, postSimulation } from "./api";
 import { translate } from "./i18n";
@@ -28,6 +28,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [apiError, setApiError] = useState(false);
   const [simulationError, setSimulationError] = useState("");
+  const impactRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(() => new Date());
   const t = useCallback((key: Parameters<typeof translate>[1]) => translate(language, key), [language]);
 
@@ -69,15 +70,45 @@ export default function App() {
   const routeCount = useMemo(() => network?.features.filter((feature) => feature.properties.entity_type === "route").length ?? 0, [network]);
   const stopCount = useMemo(() => network?.features.filter((feature) => feature.properties.entity_type === "stop").length ?? 0, [network]);
   const vehicleCount = useMemo(() => vehicles?.features.length ?? 0, [vehicles]);
+  const exampleStop = useMemo(() => network?.features
+    .filter((feature) => feature.properties.entity_type === "stop" && feature.geometry.type === "Point")
+    .sort((a, b) => {
+      const pointA = a.geometry as GeoJSON.Point;
+      const pointB = b.geometry as GeoJSON.Point;
+      const distanceA = Math.hypot(pointA.coordinates[0] - 21.013, pointA.coordinates[1] - 52.228);
+      const distanceB = Math.hypot(pointB.coordinates[0] - 21.013, pointB.coordinates[1] - 52.228);
+      return distanceA - distanceB;
+    })[0] ?? null, [network]);
 
-  async function runSimulation() {
-    if (!selection) return;
+  async function runSimulation(target: Selection | null = selection, kind = disruption, minutes = duration) {
+    if (!target) return;
     setBusy(true); setSimulationError(""); setSimulation(null);
     try {
-      setSimulation(await postSimulation({ target_type: selection.type, target_id: selection.id, disruption_type: disruption, duration_minutes: duration }));
+      setSimulation(await postSimulation({ target_type: target.type, target_id: target.id, disruption_type: kind, duration_minutes: minutes }));
     } catch (error) { setSimulationError(error instanceof Error ? error.message : t("noRoutes")); }
     finally { setBusy(false); }
   }
+
+  async function runExample() {
+    if (!exampleStop || exampleStop.geometry.type !== "Point") return;
+    const [longitude, latitude] = exampleStop.geometry.coordinates;
+    const target: Selection = {
+      type: "stop",
+      id: exampleStop.id,
+      label: String(exampleStop.properties.name),
+      coordinate: [longitude, latitude],
+    };
+    setSelection(target);
+    setDisruption("closure");
+    setDuration(30);
+    await runSimulation(target, "closure", 30);
+  }
+
+  useEffect(() => {
+    if (!simulation) return;
+    const frame = window.requestAnimationFrame(() => impactRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [simulation]);
 
   const hasLiveVehicles = vehicles?.data_mode === "live";
   const hasLiveSchedule = network?.data_mode === "live";
@@ -104,17 +135,19 @@ export default function App() {
         </aside>
 
         <section className="map-stage" aria-label={t("mapTitle")}>
-          <MapCanvas network={network} vehicles={vehicles} language={language} showBuses={showBuses} showTrams={showTrams} selection={selection} onSelect={(next) => { setSelection(next); setSimulation(null); }} />
+          <MapCanvas network={network} vehicles={vehicles} language={language} showBuses={showBuses} showTrams={showTrams} selection={selection} simulation={simulation} onSelect={(next) => { setSelection(next); setSimulation(null); }} />
           <div className="map-top-label"><span className="map-live-indicator"/><span>{t("mapView")}</span><span className="map-coordinate">52°13′41″N&nbsp; 21°00′47″E</span></div>
           {!network && <div className="map-loading"><span className="loading-ring"/>{t("loading")}</div>}
           <div className="map-legend"><span><i className="legend-dot bus-swatch"/>{t("buses")}</span><span><i className="legend-dot tram-swatch"/>{t("trams")}</span><span><i className="legend-stop"/>{t("stops")}</span></div>
           <div className="map-bottom-left"><span className="map-scale"><i/>1 km</span><span className="map-area">ŚRÓDMIEŚCIE <b>·</b> WARSAW</span></div>
           {!selection && <div className="map-selection-hint"><span className="map-hint-number">1</span><div><strong>{t("mapPromptTitle")}</strong><span>{t("mapPrompt")}</span></div></div>}
+          {simulation && <div className="scenario-map-key"><span><i className="disrupted-key"/>{t("disruptedOnMap")}</span><span><i className="alternative-key"/>{simulation.target_type === "route" ? t("sharedLinesTitle") : t("nearbyStopsTitle")}</span></div>}
         </section>
 
         <aside className="right-panel">
           <div className="panel-title"><div><span className="section-kicker">{t("desk")}</span><h2>{t("scenarioTitle")}</h2></div><span className="scenario-badge">{t("threeSteps")}</span></div>
           <p className="scenario-intro">{t("scenarioIntro")}</p>
+          {!selection && exampleStop && <button className="example-button" onClick={() => void runExample()} disabled={busy}><span className="example-play">▶</span><span><strong>{busy ? t("simulating") : t("exampleButton")}</strong><small>{t("exampleCaption")}</small></span></button>}
           <div className="panel-rule"/>
           <label className="field-label" htmlFor="target"><span className="step-index">1</span>{t("target")}</label>
           <div className={`target-card ${selection ? "has-selection" : ""}`} id="target"><span className="target-icon"><Icon name={selection?.type === "stop" ? "pin" : "route"} size={18}/></span><span className="target-copy">{selection ? <><small>{selection.type === "stop" ? t("selectedStop") : t("selectedRoute")}</small><strong>{selection.label}</strong><small className="target-change">{t("selectAnother")}</small></> : <span className="target-placeholder">{t("chooseTarget")}</span>}</span><span className="target-state">{selection ? <i/> : <Icon name="arrow" size={16}/>}</span></div>
@@ -126,8 +159,8 @@ export default function App() {
           {simulationError && <p className="form-error" role="alert">{simulationError}</p>}
           {!selection && <p className="form-hint"><span>↑</span>{t("chooseTargetShort")}</p>}
 
-          <div className="impact-section"><div className="impact-heading"><span className="section-kicker">{t("impact")}</span><span className={`impact-status ${simulation ? "calculated" : ""}`}><i/>{simulation ? t("calculated") : t("awaiting")}</span></div>
-            {simulation ? <div className="results"><div className="impact-score"><span>{t("impactScore")}</span><strong>{simulation.impact_score}<small> {t("points")}</small></strong><p>{t("scoreInfo")}</p></div><div className="result-metrics"><div><span>{t("affectedRoutes")}</span><strong>{simulation.affected_routes.length.toString().padStart(2, "0")}</strong></div><div><span>{t("affectedStops")}</span><strong>{simulation.affected_stops.length.toString().padStart(2, "0")}</strong></div></div><div className="affected-lines">{simulation.affected_routes.map((route) => <span key={route.id} className={route.mode}>{route.label}</span>)}</div>{simulation.affected_stops.length > 0 && <details className="affected-stop-list"><summary>{t("showStops")}</summary><ul>{simulation.affected_stops.slice(0, 8).map((stop, index) => <li key={`${stop}-${index}`}>{stop}</li>)}</ul>{simulation.affected_stops.length > 8 && <small>{simulation.affected_stops.length - 8} {t("moreStops")}</small>}</details>}<p className="estimate-note"><b>{t("estimateLabel")}</b> {simulation.notice}</p></div> : <div className="impact-empty"><span className="impact-orbit"><i/><b/></span><p>{selection ? t("readyToSimulate") : t("impactEmpty")}</p></div>}
+          <div className="impact-section" ref={impactRef}><div className="impact-heading"><span className="section-kicker">{t("impact")}</span><span className={`impact-status ${simulation ? "calculated" : ""}`}><i/>{simulation ? t("calculated") : t("awaiting")}</span></div>
+            {simulation ? <div className="results"><div className="result-metrics"><div><span>{simulation.target_type === "route" ? t("disruptedLine") : t("affectedRoutes")}</span><strong>{simulation.affected_routes.length.toString().padStart(2, "0")}</strong></div><div><span>{simulation.target_type === "route" ? t("stopsOnRoute") : t("closedStop")}</span><strong>{simulation.affected_stop_count.toString().padStart(2, "0")}</strong></div></div><section className="result-group"><h3>{t("affectedLinesTitle")}</h3><div className="affected-lines">{simulation.affected_routes.map((route) => <span key={route.id} className={route.mode}>{route.label}</span>)}</div></section>{simulation.target_type === "stop" ? <section className="result-group"><h3>{t("nearbyStopsTitle")}</h3><p className="result-explanation">{t("nearbyStopsExplanation")}</p>{simulation.alternative_stops.length ? <ul className="alternative-list">{simulation.alternative_stops.map((stop) => <li key={stop.id}><div><strong>{stop.name}</strong><small>{stop.distance_m} m · {t("linesAtStop")}: {stop.routes.join(", ") || "—"}</small></div><span className="alternative-distance">{stop.distance_m} m</span></li>)}</ul> : <p className="no-alternatives">{t("noNearbyStops")}</p>}</section> : <section className="result-group"><h3>{t("sharedLinesTitle")}</h3><p className="result-explanation">{t("sharedLinesExplanation")}</p>{simulation.alternative_routes.length ? <ul className="alternative-list">{simulation.alternative_routes.slice(0, 6).map((route) => <li key={route.id}><div><strong className={`route-chip ${route.mode}`}>{route.label}</strong><small>{route.shared_stops} {t("sharedStopsCount")}</small></div></li>)}</ul> : <p className="no-alternatives">{t("noSharedLines")}</p>}</section>}{simulation.affected_stops.length > 0 && <details className="affected-stop-list"><summary>{t("showStops")}</summary><ul>{simulation.affected_stops.slice(0, 8).map((stop, index) => <li key={`${stop}-${index}`}>{stop}</li>)}</ul>{simulation.affected_stops.length > 8 && <small>{simulation.affected_stops.length - 8} {t("moreStops")}</small>}</details>}<p className="estimate-note">{t("analysisDisclaimer")}</p></div> : <div className="impact-empty"><span className="impact-orbit"><i/><b/></span><p>{selection ? t("readyToSimulate") : t("impactEmpty")}</p></div>}
           </div>
           <div className="data-footer"><div className="data-footer-head"><span className="section-kicker">{t("sources")}</span><span className="source-count">03 {t("sourcesCount")}</span></div><p>{t("attribution")}</p><details className="source-details"><summary>{t("sourceDetails")}</summary><small>{sourceNotices || t("sourceInfo")}</small></details><div className="data-source-chips"><span>WARSAW API</span><span>GTFS</span><span>OPENSTREETMAP</span></div></div>
         </aside>
