@@ -105,7 +105,7 @@ export default function Punctuality({ language, t, onClose }: { language: Langua
       {error && <p className="form-error">{t("punctualityError")}</p>}
       {data && lines.length === 0 && <p className="no-alternatives">{t("noPunctuality")}</p>}
       {lines.length > 0 && <>
-        <div className="punctuality-summary"><strong>{percent(onTime)}</strong><span>{t("networkOnTime")}<br/><small>{data?.on_time_definition}</small></span></div>
+        <div className="punctuality-summary"><strong>{percent(onTime)}</strong><span>{t("networkOnTime")}<br/><small>{t("onTimeDefinition")}</small></span></div>
         <div className="punctuality-legend" aria-hidden="true"><span><i className="seg-early"/>{t("early")}</span><span><i className="seg-on-time"/>{t("onTime")}</span><span><i className="seg-late"/>{t("late")}</span><span className="legend-note">{t("meanDelay")}</span></div>
         <ul className="punctuality-bars">
           {lines.map((line) => (
