@@ -30,3 +30,7 @@ Live positions may include stale or ghost vehicles from the source feed. Disrupt
 ## Development
 
 Source code, comments and technical documentation are in English. The interface supports Polish and English.
+
+## License
+
+MIT License, see [LICENSE](LICENSE). Transit data fetched from the GTFS feeds remains subject to the terms of its source.
