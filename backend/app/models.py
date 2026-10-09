@@ -62,6 +62,44 @@ class RouteSegment(Base):
     service_minutes: Mapped[int] = mapped_column(Integer)
 
 
+class StopPattern(Base):
+    """Ordered, comma-separated stop ids shared by trips that call at the same stops."""
+
+    __tablename__ = "stop_patterns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    stop_ids: Mapped[str] = mapped_column(Text)
+
+
+class TripSchedule(Base):
+    """Compact timetable of one scheduled trip, matched to live vehicles by trip id."""
+
+    __tablename__ = "trip_schedules"
+
+    trip_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    route_id: Mapped[str] = mapped_column(String(80), index=True)
+    pattern_id: Mapped[int] = mapped_column(Integer)
+    # Comma-separated departures in seconds after service-day midnight, one per pattern stop.
+    departures: Mapped[str] = mapped_column(Text)
+
+
+class DelaySnapshot(Base):
+    """Per-line delay summary of one live positions snapshot."""
+
+    __tablename__ = "delay_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    line: Mapped[str] = mapped_column(String(32), index=True)
+    mode: Mapped[str] = mapped_column(String(24))
+    vehicles: Mapped[int] = mapped_column(Integer)
+    mean_delay_seconds: Mapped[int] = mapped_column(Integer)
+    median_delay_seconds: Mapped[int] = mapped_column(Integer)
+    early: Mapped[int] = mapped_column(Integer)
+    on_time: Mapped[int] = mapped_column(Integer)
+    late: Mapped[int] = mapped_column(Integer)
+
+
 class VehiclePosition(Base):
     __tablename__ = "vehicle_positions"
 
