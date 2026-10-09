@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapCanvas from "./MapCanvas";
+import Punctuality from "./Punctuality";
 import { fetchNetwork, fetchVehicles, postSimulation } from "./api";
 import { translate } from "./i18n";
 import type { Detour, FeatureCollection, Language, Selection, SimulationResult } from "./types";
@@ -47,6 +48,7 @@ export default function App() {
   const [disruption, setDisruption] = useState<"closure" | "slowdown">("closure");
   const [duration, setDuration] = useState(30);
   const [slowdownFactor, setSlowdownFactor] = useState(1.5);
+  const [showPunctuality, setShowPunctuality] = useState(false);
   const [simulation, setSimulation] = useState<SimulationResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [apiError, setApiError] = useState(false);
@@ -152,6 +154,7 @@ export default function App() {
           <div className="network-stats"><div className="stat-card"><span className="stat-icon mint"><Icon name="route"/></span><strong>{routeCount.toString().padStart(2, "0")}</strong><span>{t("activeLines")}</span></div><div className="stat-card"><span className="stat-icon coral"><Icon name="pin"/></span><strong>{stopCount.toString().padStart(2, "0")}</strong><span>{t("stops")}</span></div><div className="stat-card"><span className="stat-icon gold"><Icon name="bus"/></span><strong>{vehicleCount.toString().padStart(2, "0")}</strong><span>{t("vehicles")}</span></div></div>
           <div className="map-heading"><div><span className="section-kicker">{t("mapLayers")}</span><p>{t("toggleLayers")}</p></div><Icon name="layers" size={17}/></div>
           <div className="layer-controls"><button className={`layer-toggle ${showBuses ? "selected" : ""}`} aria-pressed={showBuses} onClick={() => setShowBuses(!showBuses)}><span className="layer-swatch bus-swatch"/><span>{t("buses")}</span><span className="toggle-track"><i/></span></button><button className={`layer-toggle ${showTrams ? "selected" : ""}`} aria-pressed={showTrams} onClick={() => setShowTrams(!showTrams)}><span className="layer-swatch tram-swatch"/><span>{t("trams")}</span><span className="toggle-track"><i/></span></button></div>
+          <button className={`punctuality-toggle ${showPunctuality ? "selected" : ""}`} aria-pressed={showPunctuality} onClick={() => setShowPunctuality(!showPunctuality)}><span className="stat-icon gold"><Icon name="clock" size={16}/></span><span><strong>{t("punctualityTitle")}</strong><small>{t("punctualityCaption")}</small></span></button>
           <div className="how-it-works"><span className="section-kicker">{t("howItWorks")}</span><ol><li><b>1</b><span>{t("stepChoose")}</span></li><li><b>2</b><span>{t("stepConfigure")}</span></li><li><b>3</b><span>{t("stepReview")}</span></li></ol></div>
           {apiError && <div className="left-note has-error" role="status"><span className="note-line"/><p>{t("dataFallback")}</p></div>}
           <div className="left-footer"><span className="footer-mark">R</span><span>URBAN MOBILITY<br/><b>INTELLIGENCE</b></span><span className="version">v0.1</span></div>
@@ -160,6 +163,7 @@ export default function App() {
         <section className="map-stage" aria-label={t("mapTitle")}>
           <MapCanvas network={network} vehicles={vehicles} language={language} showBuses={showBuses} showTrams={showTrams} selection={selection} simulation={simulation} onSelect={(next) => { setSelection(next); setSimulation(null); }} />
           <div className="map-top-label"><span className="map-live-indicator"/><span>{t("mapView")}</span><span className="map-coordinate">52°13′41″N&nbsp; 21°00′47″E</span></div>
+          {showPunctuality && <Punctuality language={language} t={t} onClose={() => setShowPunctuality(false)}/>}
           {!network && <div className="map-loading"><span className="loading-ring"/>{t("loading")}</div>}
           <div className="map-legend"><span><i className="legend-dot bus-swatch"/>{t("buses")}</span><span><i className="legend-dot tram-swatch"/>{t("trams")}</span><span><i className="legend-stop"/>{t("stops")}</span></div>
           <div className="map-bottom-left"><span className="map-scale"><i/>1 km</span><span className="map-area">ŚRÓDMIEŚCIE <b>·</b> WARSAW</span></div>

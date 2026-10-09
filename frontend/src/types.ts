@@ -104,3 +104,33 @@ export interface SimulationResult {
   notice: string;
   created_at: string;
 }
+
+export interface PunctualityPoint {
+  observed_at: string;
+  vehicles: number;
+  mean_delay_minutes: number;
+  on_time_share: number;
+}
+
+export interface LinePunctuality {
+  line: string;
+  mode: string;
+  observations: number;
+  mean_delay_minutes: number;
+  median_delay_minutes: number;
+  early_share: number;
+  on_time_share: number;
+  late_share: number;
+  series: PunctualityPoint[];
+}
+
+export interface PunctualityResult {
+  data_mode: DataMode;
+  window_minutes: number;
+  snapshots: number;
+  observed_from: string | null;
+  observed_to: string | null;
+  on_time_definition: string;
+  lines: LinePunctuality[];
+  notice: string;
+}
