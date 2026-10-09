@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapCanvas from "./MapCanvas";
 import { fetchNetwork, fetchVehicles, postSimulation } from "./api";
 import { translate } from "./i18n";
-import type { FeatureCollection, Language, Selection, SimulationResult } from "./types";
+import type { Detour, FeatureCollection, Language, Selection, SimulationResult } from "./types";
 import "./styles.css";
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -15,6 +15,28 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
   return <svg {...common}><path d="M3 12h18M6 6l-3 6 3 6m12-12 3 6-3 6M8 3l4 18 4-18" /></svg>;
 }
 
+const SLOWDOWN_FACTORS = [1.5, 2, 3];
+
+function formatMinutes(value: number | null | undefined) {
+  if (value === null || value === undefined) return "—";
+  return Number.isInteger(value) ? value.toString() : value.toFixed(1);
+}
+
+function DetourCard({ detour, t }: { detour: Detour; t: (key: Parameters<typeof translate>[1]) => string }) {
+  const blocked = detour.disrupted_minutes === null;
+  return (
+    <li className={`detour-card ${blocked ? "is-blocked" : ""}`}>
+      <div className="detour-head">
+        <span className="detour-lines">{detour.lines.map((line) => <span key={line.id} className={`route-chip ${line.mode}`}>{line.label}</span>)}</span>
+        <strong>{detour.origin} → {detour.destination}</strong>
+        <span className="detour-added">{blocked ? t("noDetour") : `+${formatMinutes(detour.added_minutes)} ${t("minutes")}`}</span>
+      </div>
+      <small className="detour-times">{t("usually")} {formatMinutes(detour.baseline_minutes)} {t("minutes")}{blocked ? "" : ` · ${t("now")} ${formatMinutes(detour.disrupted_minutes)} ${t("minutes")}`}</small>
+      {!blocked && <ol className="detour-legs">{detour.legs.map((leg, index) => <li key={index} className={leg.kind}>{leg.kind === "walk" ? <><span className="leg-walk">{t("walk")}</span><span>{leg.to_stop}</span><em>{formatMinutes(leg.minutes)} {t("minutes")}</em></> : <><span className={`route-chip ${leg.mode ?? ""}`}>{leg.line}</span><span>{leg.from_stop} → {leg.to_stop}</span><em>{leg.stops} {t("stopsShort")} · {formatMinutes(leg.minutes)} {t("minutes")}</em></>}</li>)}</ol>}
+    </li>
+  );
+}
+
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => localStorage.getItem("reroute-language") === "en" ? "en" : "pl");
   const [network, setNetwork] = useState<FeatureCollection | null>(null);
@@ -24,6 +46,7 @@ export default function App() {
   const [showTrams, setShowTrams] = useState(true);
   const [disruption, setDisruption] = useState<"closure" | "slowdown">("closure");
   const [duration, setDuration] = useState(30);
+  const [slowdownFactor, setSlowdownFactor] = useState(1.5);
   const [simulation, setSimulation] = useState<SimulationResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [apiError, setApiError] = useState(false);
@@ -84,7 +107,7 @@ export default function App() {
     if (!target) return;
     setBusy(true); setSimulationError(""); setSimulation(null);
     try {
-      setSimulation(await postSimulation({ target_type: target.type, target_id: target.id, disruption_type: kind, duration_minutes: minutes }));
+      setSimulation(await postSimulation({ target_type: target.type, target_id: target.id, disruption_type: kind, duration_minutes: minutes, slowdown_factor: slowdownFactor }));
     } catch (error) { setSimulationError(error instanceof Error ? error.message : t("noRoutes")); }
     finally { setBusy(false); }
   }
@@ -152,7 +175,7 @@ export default function App() {
           <label className="field-label" htmlFor="target"><span className="step-index">1</span>{t("target")}</label>
           <div className={`target-card ${selection ? "has-selection" : ""}`} id="target"><span className="target-icon"><Icon name={selection?.type === "stop" ? "pin" : "route"} size={18}/></span><span className="target-copy">{selection ? <><small>{selection.type === "stop" ? t("selectedStop") : t("selectedRoute")}</small><strong>{selection.label}</strong><small className="target-change">{t("selectAnother")}</small></> : <span className="target-placeholder">{t("chooseTarget")}</span>}</span><span className="target-state">{selection ? <i/> : <Icon name="arrow" size={16}/>}</span></div>
 
-          <div className="field-block"><span className="field-label"><span className="step-index">2</span>{t("disruption")}</span><div className="segmented-control"><button className={disruption === "closure" ? "active" : ""} aria-pressed={disruption === "closure"} onClick={() => setDisruption("closure")}><Icon name="pin" size={15}/>{t("closure")}</button><button className={disruption === "slowdown" ? "active" : ""} aria-pressed={disruption === "slowdown"} onClick={() => setDisruption("slowdown")}><Icon name="route" size={15}/>{t("slowdown")}</button></div><p className="field-explainer">{disruption === "closure" ? t("closureHelp") : t("slowdownHelp")}</p></div>
+          <div className="field-block"><span className="field-label"><span className="step-index">2</span>{t("disruption")}</span><div className="segmented-control"><button className={disruption === "closure" ? "active" : ""} aria-pressed={disruption === "closure"} onClick={() => setDisruption("closure")}><Icon name="pin" size={15}/>{t("closure")}</button><button className={disruption === "slowdown" ? "active" : ""} aria-pressed={disruption === "slowdown"} onClick={() => setDisruption("slowdown")}><Icon name="route" size={15}/>{t("slowdown")}</button></div><p className="field-explainer">{disruption === "closure" ? t("closureHelp") : t("slowdownHelp")}</p>{disruption === "slowdown" && <div className="factor-control" role="group" aria-label={t("slowdownFactor")}><span>{t("slowdownFactor")}</span>{SLOWDOWN_FACTORS.map((factor) => <button key={factor} className={slowdownFactor === factor ? "active" : ""} aria-pressed={slowdownFactor === factor} onClick={() => setSlowdownFactor(factor)}>×{factor}</button>)}</div>}</div>
           <div className="duration-head"><span className="field-label"><span className="step-index">3</span>{t("duration")}</span><span className="duration-value">{duration}<small> {t("minutes")}</small></span></div>
           <div className="duration-control"><input aria-label={t("duration")} type="range" min="5" max="120" step="5" value={duration} onChange={(event) => setDuration(Number(event.target.value))} style={{ "--range-progress": `${((duration - 5) / 115) * 100}%` } as React.CSSProperties}/><div className="range-labels"><span>5 {t("minutes")}</span><span>120 {t("minutes")}</span></div></div>
           <button className="run-button" disabled={!selection || busy} onClick={() => void runSimulation()}><span>{busy ? t("simulating") : t("simulate")}</span><span className="run-button-icon"><Icon name="arrow" size={17}/></span></button>
@@ -160,7 +183,7 @@ export default function App() {
           {!selection && <p className="form-hint"><span>↑</span>{t("chooseTargetShort")}</p>}
 
           <div className="impact-section" ref={impactRef}><div className="impact-heading"><span className="section-kicker">{t("impact")}</span><span className={`impact-status ${simulation ? "calculated" : ""}`}><i/>{simulation ? t("calculated") : t("awaiting")}</span></div>
-            {simulation ? <div className="results"><div className="result-metrics"><div><span>{simulation.target_type === "route" ? t("disruptedLine") : t("affectedRoutes")}</span><strong>{simulation.affected_routes.length.toString().padStart(2, "0")}</strong></div><div><span>{simulation.target_type === "route" ? t("stopsOnRoute") : t("closedStop")}</span><strong>{simulation.affected_stop_count.toString().padStart(2, "0")}</strong></div></div><section className="result-group"><h3>{t("affectedLinesTitle")}</h3><div className="affected-lines">{simulation.affected_routes.map((route) => <span key={route.id} className={route.mode}>{route.label}</span>)}</div></section>{simulation.target_type === "stop" ? <section className="result-group"><h3>{t("nearbyStopsTitle")}</h3><p className="result-explanation">{t("nearbyStopsExplanation")}</p>{simulation.alternative_stops.length ? <ul className="alternative-list">{simulation.alternative_stops.map((stop) => <li key={stop.id}><div><strong>{stop.name}</strong><small>{stop.distance_m} m · {t("linesAtStop")}: {stop.routes.join(", ") || "—"}</small></div><span className="alternative-distance">{stop.distance_m} m</span></li>)}</ul> : <p className="no-alternatives">{t("noNearbyStops")}</p>}</section> : <section className="result-group"><h3>{t("sharedLinesTitle")}</h3><p className="result-explanation">{t("sharedLinesExplanation")}</p>{simulation.alternative_routes.length ? <ul className="alternative-list">{simulation.alternative_routes.slice(0, 6).map((route) => <li key={route.id}><div><strong className={`route-chip ${route.mode}`}>{route.label}</strong><small>{route.shared_stops} {t("sharedStopsCount")}</small></div></li>)}</ul> : <p className="no-alternatives">{t("noSharedLines")}</p>}</section>}{simulation.affected_stops.length > 0 && <details className="affected-stop-list"><summary>{t("showStops")}</summary><ul>{simulation.affected_stops.slice(0, 8).map((stop, index) => <li key={`${stop}-${index}`}>{stop}</li>)}</ul>{simulation.affected_stops.length > 8 && <small>{simulation.affected_stops.length - 8} {t("moreStops")}</small>}</details>}<p className="estimate-note">{t("analysisDisclaimer")}</p></div> : <div className="impact-empty"><span className="impact-orbit"><i/><b/></span><p>{selection ? t("readyToSimulate") : t("impactEmpty")}</p></div>}
+            {simulation ? <div className="results"><div className="result-metrics"><div><span>{simulation.target_type === "route" ? t("disruptedLine") : t("affectedRoutes")}</span><strong>{simulation.affected_routes.length.toString().padStart(2, "0")}</strong></div><div><span>{simulation.target_type === "route" ? t("stopsOnRoute") : t("closedStop")}</span><strong>{simulation.affected_stop_count.toString().padStart(2, "0")}</strong></div></div><div className="result-metrics routing-metrics"><div><span>{t("affectedTrips")}</span><strong>{simulation.routing.affected_trips}</strong><small>{t("inWindow")} {simulation.duration_minutes} {t("minutes")}</small></div><div><span>{t("averageAdded")}</span><strong>{simulation.routing.average_added_minutes === null ? "—" : `+${formatMinutes(simulation.routing.average_added_minutes)}`}<small> {t("minutes")}</small></strong></div><div><span>{t("worstAdded")}</span><strong>{simulation.routing.max_added_minutes === null ? "—" : `+${formatMinutes(simulation.routing.max_added_minutes)}`}<small> {t("minutes")}</small></strong></div></div><section className="result-group"><h3>{t("detoursTitle")}</h3><p className="result-explanation">{simulation.disruption_type === "closure" ? t("detoursClosure") : t("detoursSlowdown")}{simulation.routing.unreachable_journeys > 0 ? ` ${simulation.routing.unreachable_journeys} ${t("unreachable")}` : ""}</p>{simulation.detours.length ? <ul className="detour-list">{simulation.detours.slice(0, 4).map((detour) => <DetourCard key={`${detour.origin}-${detour.destination}`} detour={detour} t={t}/>)}</ul> : <p className="no-alternatives">{t("noDetours")}</p>}</section><section className="result-group"><h3>{t("affectedLinesTitle")}</h3><div className="affected-lines">{simulation.affected_routes.map((route) => <span key={route.id} className={route.mode}>{route.label}</span>)}</div></section>{simulation.target_type === "stop" ? <section className="result-group"><h3>{t("nearbyStopsTitle")}</h3><p className="result-explanation">{t("nearbyStopsExplanation")}</p>{simulation.alternative_stops.length ? <ul className="alternative-list">{simulation.alternative_stops.map((stop) => <li key={stop.id}><div><strong>{stop.name}</strong><small>{stop.distance_m} m · {t("linesAtStop")}: {stop.routes.join(", ") || "—"}</small></div><span className="alternative-distance">{stop.distance_m} m</span></li>)}</ul> : <p className="no-alternatives">{t("noNearbyStops")}</p>}</section> : <section className="result-group"><h3>{t("sharedLinesTitle")}</h3><p className="result-explanation">{t("sharedLinesExplanation")}</p>{simulation.alternative_routes.length ? <ul className="alternative-list">{simulation.alternative_routes.slice(0, 6).map((route) => <li key={route.id}><div><strong className={`route-chip ${route.mode}`}>{route.label}</strong><small>{route.shared_stops} {t("sharedStopsCount")}</small></div></li>)}</ul> : <p className="no-alternatives">{t("noSharedLines")}</p>}</section>}{simulation.affected_stops.length > 0 && <details className="affected-stop-list"><summary>{t("showStops")}</summary><ul>{simulation.affected_stops.slice(0, 8).map((stop, index) => <li key={`${stop}-${index}`}>{stop}</li>)}</ul>{simulation.affected_stops.length > 8 && <small>{simulation.affected_stops.length - 8} {t("moreStops")}</small>}</details>}<p className="estimate-note">{t("analysisDisclaimer")}</p></div> : <div className="impact-empty"><span className="impact-orbit"><i/><b/></span><p>{selection ? t("readyToSimulate") : t("impactEmpty")}</p></div>}
           </div>
           <div className="data-footer"><div className="data-footer-head"><span className="section-kicker">{t("sources")}</span><span className="source-count">03 {t("sourcesCount")}</span></div><p>{t("attribution")}</p><details className="source-details"><summary>{t("sourceDetails")}</summary><small>{sourceNotices || t("sourceInfo")}</small></details><div className="data-source-chips"><span>WARSAW API</span><span>GTFS</span><span>OPENSTREETMAP</span></div></div>
         </aside>
