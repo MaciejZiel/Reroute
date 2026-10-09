@@ -119,3 +119,33 @@ class SimulationResponse(BaseModel):
     data_mode: Literal["live", "demo"]
     notice: str
     created_at: datetime
+
+
+class PunctualityPoint(BaseModel):
+    observed_at: datetime
+    vehicles: int
+    mean_delay_minutes: float
+    on_time_share: float
+
+
+class LinePunctuality(BaseModel):
+    line: str
+    mode: str
+    observations: int
+    mean_delay_minutes: float
+    median_delay_minutes: float
+    early_share: float
+    on_time_share: float
+    late_share: float
+    series: list[PunctualityPoint]
+
+
+class PunctualityResponse(BaseModel):
+    data_mode: Literal["live", "demo"]
+    window_minutes: int
+    snapshots: int
+    observed_from: datetime | None
+    observed_to: datetime | None
+    on_time_definition: str
+    lines: list[LinePunctuality]
+    notice: str
