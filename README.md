@@ -14,7 +14,7 @@
 
 - **Network map** – Warsaw bus and tram routes and stops from the official ZTM GTFS schedule, drawn with MapLibre (stops clustered at low zoom). A small fictional demo network is built in, so the app works with no import and no credentials.
 - **Live vehicles** – positions from the public Warsaw GTFS-Realtime feed, refreshed every 15 seconds in the browser and cached for 12 seconds on the server. If the feed is down, the UI switches to clearly labelled demo vehicles.
-- **Disruption check** – pick a stop or a line, choose *close* or *slow down* and a duration (5–120 min). The API returns the affected lines, the affected stops, other lines sharing the same stops, and nearby stops within 500 m with the lines that serve them.
+- **Disruption check with rerouting** – pick a stop or a line, choose *close* or *slow down* (run times ×1.5/×2/×3) and a duration (5–120 min). A closure removes the stop (all platforms with the same name) or the line from the stop graph; a slowdown stretches its scheduled run times. The API reroutes sample journeys around the disruption with Dijkstra (walking between stops, expected waits and a transfer penalty) and reports the scheduled trips affected during the window, added minutes per journey, the alternative itineraries, other lines sharing the same stops and nearby stops within 500 m.
 - **Bilingual UI** – Polish and English.
 
 | Network overview | Closure detail |
@@ -25,8 +25,8 @@
 
 ```mermaid
 flowchart LR
-    GTFS[(ZTM GTFS archive<br/>mkuran.pl)] -->|python -m app.import_gtfs| IMP[GTFS parser<br/>stops, routes, shapes]
-    IMP --> DB[(PostgreSQL + PostGIS<br/>routes, stops, route_stops,<br/>simulations)]
+    GTFS[(ZTM GTFS archive<br/>mkuran.pl)] -->|python -m app.import_gtfs| IMP[GTFS parser<br/>stops, routes, shapes,<br/>timed segments]
+    IMP --> DB[(PostgreSQL + PostGIS<br/>routes, stops, route_stops,<br/>route_segments, simulations)]
     RT[(GTFS-Realtime<br/>vehicles.pb)] -->|httpx, 12 s cache| API
     DB --> API[FastAPI<br/>/api/network<br/>/api/vehicles<br/>/api/simulations]
     API -->|GeoJSON| WEB[React + MapLibre GL<br/>map, scenario panel]
@@ -62,24 +62,24 @@ Repeat imports reuse the cached archive; pass `--force-download` to fetch the la
 ```bash
 cd backend
 uv sync --extra dev        # or: pip install -e '.[dev]'
-uv run pytest -q           # 8 tests
+uv run pytest -q           # 18 tests
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The tests build a small GTFS archive in a temporary directory and stub the HTTP client, so they need neither a database nor network access. They cover GTFS parsing (bus/tram shapes, extended route types, rejecting incomplete archives), the live feed (route mapping, dropping positions outside Warsaw, demo fallback on failure) and the nearby-stop distance logic. CI runs the backend lint and tests plus the frontend type check and build.
+The tests build a small GTFS archive in a temporary directory and stub the HTTP client, so they need neither a database nor network access. They cover GTFS parsing (bus/tram shapes, extended route types, rejecting incomplete archives, timed segments on the busiest service day), rerouting on a small fixture network (closure vs. slowdown, transfers, walking, trips in the window), the live feed (route mapping, dropping positions outside Warsaw, demo fallback on failure) and the nearby-stop distance logic. CI runs the backend lint and tests plus the frontend type check and build.
 
 ## Key technical decisions
 
 - **Demo data first, real data on demand.** A fresh `docker compose up` works offline with a fictional network, and every API response carries `data_mode` (`demo` or `live`) plus a source notice, so the UI can always say what it is showing. The 100 MB GTFS import is an explicit step, and it replaces only non-demo rows.
 - **Live feed fetched lazily, with a short shared cache.** Vehicle positions are not stored. The first request after the 12-second cache expires fetches the protobuf feed, behind a lock so concurrent requests don't hit the source twice. This keeps the server stateless and respectful of a free public feed, at the cost of one slower request per refresh.
-- **Static network analysis, not routing.** The simulation answers "which lines serve this stop/line and what is nearby" from the timetable graph, and the impact score is simply affected stops × duration. Passenger routing, travel times and real demand are out of scope, and the API notice says so.
+- **Shortest paths on a route-expanded stop graph.** The importer keeps one *segment* per pair of consecutive stops of a route, with the mean scheduled run time and the number of trips on the busiest service day of the feed. A search state is "at stop S" or "on line L at stop S", so boarding can carry an expected wait (half the headway, 1–15 min) plus a 2-minute transfer penalty, and walking links stops within 400 m (×1.3 street detour at 1.2 m/s). A closure deletes the affected segments, a slowdown multiplies their run times, and plain Dijkstra with an early exit once all targets are settled is fast enough (a few ms per origin on the 7k-stop network). Journeys are sampled per affected line and direction: two stops either side of a closed stop, or five evenly spaced stops along a closed line. There is no demand data, so "added minutes" are per journey, not passenger-weighted.
 - **Cheap geo filtering for nearby stops.** Candidates come from a latitude/longitude bounding box in SQL, then exact haversine distances are computed in Python. With ~7k stops this is fast and easy to unit test. PostGIS geometries are stored for route shapes and stop locations, so the query can move to `ST_DWithin` with a spatial index when needed.
 
 ## Limitations / next steps
 
 - Live positions can include stale or ghost vehicles from the source feed; vehicles older than 2 minutes are flagged as stale but still shown.
 - The schema is created with `create_all` at startup, with an in-place column type fix; Alembic migrations would replace this.
-- The impact score is illustrative, not an official forecast or passenger count. The disruption type (closure or slowdown) is stored with each simulation but does not change the analysis yet.
+- Results are timetable estimates, not an official forecast or passenger count: there is no demand data, departures are averaged into a headway (no exact connection times), and a closed line is assumed to have no replacement service. The legacy impact score (affected stops × duration) is still returned for compatibility.
 - Tests cover data parsing and analysis helpers; there are no API-level tests against PostGIS or frontend tests yet.
 
 ## Data and attribution
