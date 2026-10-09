@@ -217,3 +217,70 @@ def test_live_feed_failure_leaves_a_clear_demo_fallback_signal(
 
     assert snapshot.vehicles == ()
     assert snapshot.error == "feed offline"
+
+
+def test_parse_schedule_times_segments_on_the_busiest_service_day(tmp_path: Path) -> None:
+    archive_path = tmp_path / "timed.zip"
+    stop = {"stop_lat": "52.23", "stop_lon": "21.01"}
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        _write_csv(
+            archive,
+            "routes.txt",
+            [{"route_id": "9", "route_short_name": "9", "route_long_name": "", "route_type": "0"}],
+        )
+        _write_csv(
+            archive,
+            "stops.txt",
+            [{"stop_id": stop_id, "stop_name": stop_id, **stop} for stop_id in ("a", "b", "c")],
+        )
+        _write_csv(
+            archive,
+            "calendar_dates.txt",
+            [
+                {"date": "20261012", "service_id": "weekday", "exception_type": "1"},
+                {"date": "20261013", "service_id": "weekday", "exception_type": "1"},
+                {"date": "20261011", "service_id": "sunday", "exception_type": "1"},
+            ],
+        )
+        _write_csv(
+            archive,
+            "trips.txt",
+            [
+                {"trip_id": "w1", "route_id": "9", "service_id": "weekday", "shape_id": ""},
+                {"trip_id": "w2", "route_id": "9", "service_id": "weekday", "shape_id": ""},
+                {"trip_id": "s1", "route_id": "9", "service_id": "sunday", "shape_id": ""},
+            ],
+        )
+        times = {
+            "w1": ["06:00:00", "06:02:00", "06:05:00"],
+            "w2": ["24:10:00", "24:13:00", "24:16:00"],
+            "s1": ["07:00:00", "07:10:00", "07:20:00"],
+        }
+        _write_csv(
+            archive,
+            "stop_times.txt",
+            [
+                {
+                    "trip_id": trip_id,
+                    "stop_id": stop_id,
+                    "stop_sequence": str(sequence),
+                    "arrival_time": clock[sequence],
+                    "departure_time": clock[sequence],
+                }
+                for trip_id, clock in times.items()
+                for sequence, stop_id in enumerate(("a", "b", "c"))
+            ],
+        )
+        archive.writestr("shapes.txt", "shape_id,shape_pt_sequence,shape_pt_lat,shape_pt_lon\n")
+
+    result = data_sources.parse_schedule(archive_path)
+
+    assert result.service_date == "2026-10-12"
+    segments = {(item.from_stop_id, item.to_stop_id): item for item in result.segments}
+    assert set(segments) == {("a", "b"), ("b", "c")}
+    # Only the two weekday trips count; the slow Sunday trip is ignored.
+    assert segments[("a", "b")].trips == 2
+    assert segments[("a", "b")].run_seconds == 150
+    assert segments[("b", "c")].run_seconds == 180
+    # First departure 06:00, last 24:10 (after midnight on the same service day).
+    assert segments[("a", "b")].service_minutes == 18 * 60 + 10

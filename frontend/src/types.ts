@@ -29,6 +29,45 @@ export interface AffectedRoute {
   label: string;
   mode: string;
   affected_stops: number;
+  affected_trips: number;
+}
+
+export interface JourneyLeg {
+  kind: "ride" | "walk";
+  line: string | null;
+  mode: string | null;
+  from_stop: string;
+  to_stop: string;
+  minutes: number;
+  wait_minutes: number;
+  stops: number;
+}
+
+export interface RouteLabel {
+  id: string;
+  label: string;
+  mode: string;
+}
+
+export interface Detour {
+  lines: RouteLabel[];
+  origin: string;
+  destination: string;
+  baseline_minutes: number;
+  disrupted_minutes: number | null;
+  added_minutes: number | null;
+  legs: JourneyLeg[];
+}
+
+export interface RoutingSummary {
+  affected_trips: number;
+  affected_segments: number;
+  sampled_journeys: number;
+  average_added_minutes: number | null;
+  max_added_minutes: number | null;
+  unreachable_journeys: number;
+  slowdown_factor: number | null;
+  closed_stop_ids: string[];
 }
 
 export interface AlternativeRoute {
@@ -57,6 +96,8 @@ export interface SimulationResult {
   affected_stops: string[];
   alternative_routes: AlternativeRoute[];
   alternative_stops: AlternativeStop[];
+  routing: RoutingSummary;
+  detours: Detour[];
   affected_stop_count: number;
   impact_score: number;
   data_mode: DataMode;

@@ -21,6 +21,7 @@ export async function postSimulation(input: {
   target_id: string;
   disruption_type: "closure" | "slowdown";
   duration_minutes: number;
+  slowdown_factor?: number;
 }): Promise<SimulationResult> {
   const response = await fetch(`${apiBase}/api/simulations`, {
     method: "POST",

@@ -9,7 +9,7 @@ import time
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TextIO
 
@@ -18,10 +18,10 @@ from geoalchemy2.shape import from_shape
 from google.protobuf.message import DecodeError
 from google.transit import gtfs_realtime_pb2
 from shapely.geometry import LineString, MultiLineString, Point
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
-from .models import FeedMetadata, Route, RouteStop, Stop
+from .models import FeedMetadata, Route, RouteSegment, RouteStop, Stop
 
 DEFAULT_GTFS_URL = "https://mkuran.pl/gtfs/warsaw.zip"
 DEFAULT_VEHICLES_URL = "https://mkuran.pl/gtfs/warsaw/vehicles.pb"
@@ -54,6 +54,16 @@ class ParsedRouteStop:
 
 
 @dataclass(frozen=True)
+class ParsedSegment:
+    route_id: str
+    from_stop_id: str
+    to_stop_id: str
+    run_seconds: int
+    trips: int
+    service_minutes: int
+
+
+@dataclass(frozen=True)
 class ParsedSchedule:
     stops: tuple[ParsedStop, ...]
     routes: tuple[ParsedRoute, ...]
@@ -63,6 +73,8 @@ class ParsedSchedule:
     feed_end_date: str
     feed_version: str
     attributions: str
+    segments: tuple[ParsedSegment, ...] = ()
+    service_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -155,7 +167,9 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                         (),
                     )
 
+        service_dates = _service_dates(archive, names)
         trip_routes: dict[str, tuple[str, str]] = {}
+        trip_services: dict[str, str] = {}
         shape_counts: Counter[tuple[str, str]] = Counter()
         with _csv_rows(archive, "trips.txt") as rows:
             for row in rows:
@@ -164,8 +178,11 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                 shape_id = row.get("shape_id", "").strip()
                 if trip_id and route_id in routes:
                     trip_routes[trip_id] = (route_id, shape_id)
+                    trip_services[trip_id] = row.get("service_id", "").strip()
                     if shape_id:
                         shape_counts[(route_id, shape_id)] += 1
+        service_date, timed_trips = _representative_day(trip_services, service_dates)
+        segment_builder = _SegmentBuilder(trip_routes, timed_trips)
 
         selected_shapes: dict[str, set[str]] = defaultdict(set)
         for (route_id, shape_id), _ in shape_counts.most_common():
@@ -175,6 +192,7 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         route_stop_sequences: dict[tuple[str, str], int] = {}
         with _csv_rows(archive, "stop_times.txt") as rows:
             for row in rows:
+                segment_builder.add(row)
                 trip = trip_routes.get(row.get("trip_id", ""))
                 stop_id = row.get("stop_id", "").strip()
                 if (
@@ -189,6 +207,7 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                     continue
                 key = (trip[0], stop_id)
                 route_stop_sequences[key] = min(sequence, route_stop_sequences.get(key, sequence))
+            segment_builder.flush()
 
         shape_points: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
         wanted_shapes = set().union(*selected_shapes.values()) if selected_shapes else set()
@@ -233,6 +252,13 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
     parsed_routes = [route for route in parsed_routes if route.id in routes_with_stops]
     retained_ids = {route.id for route in parsed_routes}
     route_stops = tuple(item for item in route_stops if item.route_id in retained_ids)
+    segments = tuple(
+        segment
+        for segment in segment_builder.segments()
+        if segment.route_id in retained_ids
+        and segment.from_stop_id in stops
+        and segment.to_stop_id in stops
+    )
     return ParsedSchedule(
         stops=tuple(stops.values()),
         routes=tuple(parsed_routes),
@@ -242,12 +268,15 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         feed_end_date=feed_info.get("feed_end_date", ""),
         feed_version=feed_info.get("feed_version", ""),
         attributions=attributions,
+        segments=segments,
+        service_date=service_date,
     )
 
 
 def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
     """Replace only live GTFS records and preserve the fictional demo fallback."""
     live_route_ids = select(Route.id).where(Route.is_demo.is_(False))
+    session.execute(delete(RouteSegment).where(RouteSegment.route_id.in_(live_route_ids)))
     session.execute(delete(RouteStop).where(RouteStop.route_id.in_(live_route_ids)))
     session.execute(delete(Route).where(Route.is_demo.is_(False)))
     session.execute(delete(Stop).where(Stop.is_demo.is_(False)))
@@ -281,6 +310,22 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
         RouteStop(route_id=item.route_id, stop_id=item.stop_id, sequence=item.sequence)
         for item in schedule.route_stops
     )
+    session.flush()
+    if schedule.segments:
+        session.execute(
+            insert(RouteSegment),
+            [
+                {
+                    "route_id": item.route_id,
+                    "from_stop_id": item.from_stop_id,
+                    "to_stop_id": item.to_stop_id,
+                    "run_seconds": item.run_seconds,
+                    "trips": item.trips,
+                    "service_minutes": item.service_minutes,
+                }
+                for item in schedule.segments
+            ],
+        )
     session.merge(
         FeedMetadata(
             id="warsaw-static-gtfs",
@@ -378,6 +423,133 @@ def get_live_vehicles(session: Session, force: bool = False) -> LiveVehicleSnaps
         _vehicle_cache = snapshot
         _vehicle_cache_until = time.monotonic() + VEHICLE_REFRESH_SECONDS
         return snapshot
+
+
+def _service_dates(archive: zipfile.ZipFile, names: set[str]) -> dict[str, set[str]]:
+    """Expand calendar.txt and calendar_dates.txt into service id -> YYYYMMDD dates."""
+    dates: dict[str, set[str]] = defaultdict(set)
+    weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    if "calendar.txt" in names:
+        with _csv_rows(archive, "calendar.txt") as rows:
+            for row in rows:
+                try:
+                    current = datetime.strptime(row["start_date"].strip(), "%Y%m%d").date()
+                    end = datetime.strptime(row["end_date"].strip(), "%Y%m%d").date()
+                except (KeyError, ValueError):
+                    continue
+                while current <= end and (end - current).days < 400:
+                    if row.get(weekdays[current.weekday()], "0").strip() == "1":
+                        dates[row.get("service_id", "").strip()].add(current.strftime("%Y%m%d"))
+                    current += timedelta(days=1)
+    if "calendar_dates.txt" in names:
+        with _csv_rows(archive, "calendar_dates.txt") as rows:
+            for row in rows:
+                service_id = row.get("service_id", "").strip()
+                day = row.get("date", "").strip()
+                if row.get("exception_type", "").strip() == "1":
+                    dates[service_id].add(day)
+                elif row.get("exception_type", "").strip() == "2":
+                    dates[service_id].discard(day)
+    return dates
+
+
+def _representative_day(
+    trip_services: dict[str, str], service_dates: dict[str, set[str]]
+) -> tuple[str, set[str] | None]:
+    """Pick the busiest service day so trip counts describe one day, not the whole feed."""
+    if not service_dates:
+        return "", None
+    trips_per_service = Counter(trip_services.values())
+    trips_per_day: Counter[str] = Counter()
+    for service_id, count in trips_per_service.items():
+        for day in service_dates.get(service_id, ()):
+            trips_per_day[day] += count
+    if not trips_per_day:
+        return "", None
+    busiest = max(trips_per_day.values())
+    day = min(day for day, count in trips_per_day.items() if count == busiest)
+    services = {service_id for service_id, days in service_dates.items() if day in days}
+    return (
+        date(int(day[:4]), int(day[4:6]), int(day[6:])).isoformat(),
+        {trip_id for trip_id, service_id in trip_services.items() if service_id in services},
+    )
+
+
+class _SegmentBuilder:
+    """Collect stop-to-stop run times while stop_times.txt streams past, one trip at a time."""
+
+    def __init__(self, trip_routes: dict[str, tuple[str, str]], trips: set[str] | None):
+        self.trip_routes = trip_routes
+        self.trips = trips
+        self.trip_id = ""
+        self.rows: list[tuple[int, str, int, int]] = []
+        self.runs: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+        self.first_departure: dict[tuple[str, str, str], int] = {}
+        self.last_departure: dict[tuple[str, str, str], int] = {}
+
+    def add(self, row: dict[str, str]) -> None:
+        trip_id = row.get("trip_id", "")
+        if trip_id != self.trip_id:
+            self.flush()
+            self.trip_id = trip_id
+        timed = self.trips is None or trip_id in self.trips
+        if trip_id not in self.trip_routes or not timed:
+            return
+        arrival = _gtfs_seconds(row.get("arrival_time", ""))
+        departure = _gtfs_seconds(row.get("departure_time", "")) or arrival
+        try:
+            sequence = int(row["stop_sequence"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if arrival is None or departure is None:
+            return
+        self.rows.append((sequence, row.get("stop_id", "").strip(), arrival, departure))
+
+    def flush(self) -> None:
+        if self.rows and self.trip_id in self.trip_routes:
+            route_id = self.trip_routes[self.trip_id][0]
+            ordered = sorted(self.rows)
+            for (_, from_stop, _, departure), (_, to_stop, arrival, _) in zip(
+                ordered, ordered[1:], strict=False
+            ):
+                run = arrival - departure
+                if from_stop == to_stop or not 0 <= run <= 3600:
+                    continue
+                key = (route_id, from_stop, to_stop)
+                self.runs[key].append(run)
+                self.first_departure[key] = min(departure, self.first_departure.get(key, departure))
+                self.last_departure[key] = max(departure, self.last_departure.get(key, departure))
+        self.rows = []
+
+    def segments(self) -> list[ParsedSegment]:
+        return [
+            ParsedSegment(
+                route_id=route_id,
+                from_stop_id=from_stop,
+                to_stop_id=to_stop,
+                # Timetables use whole minutes, so the mean over all trips is a better
+                # estimate than the median, which is often exactly 0 or 60 seconds.
+                run_seconds=max(round(sum(runs) / len(runs)), 20),
+                trips=len(runs),
+                service_minutes=max(
+                    round((self.last_departure[key] - self.first_departure[key]) / 60), 60
+                ),
+            )
+            for key, runs in self.runs.items()
+            for route_id, from_stop, to_stop in [key]
+        ]
+
+
+def _gtfs_seconds(value: str) -> int | None:
+    """Seconds after service-day midnight; GTFS allows hours past 24."""
+    parts = value.strip().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = (int(part) for part in parts)
+    except ValueError:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def _route_mode(route_type: str) -> str | None:
