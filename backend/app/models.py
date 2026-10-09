@@ -43,6 +43,25 @@ class RouteStop(Base):
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
 
 
+class RouteSegment(Base):
+    """A scheduled hop between two consecutive stops of a route on a representative day."""
+
+    __tablename__ = "route_segments"
+
+    route_id: Mapped[str] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"), primary_key=True
+    )
+    from_stop_id: Mapped[str] = mapped_column(
+        ForeignKey("stops.id", ondelete="CASCADE"), primary_key=True
+    )
+    to_stop_id: Mapped[str] = mapped_column(
+        ForeignKey("stops.id", ondelete="CASCADE"), primary_key=True
+    )
+    run_seconds: Mapped[int] = mapped_column(Integer)
+    trips: Mapped[int] = mapped_column(Integer)
+    service_minutes: Mapped[int] = mapped_column(Integer)
+
+
 class VehiclePosition(Base):
     __tablename__ = "vehicle_positions"
 
