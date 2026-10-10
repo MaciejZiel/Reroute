@@ -1,6 +1,6 @@
 # Reroute
 
-**A local-first Warsaw transit control room: see the bus and tram network with live vehicle positions, then check what a stop or line closure would affect.**
+**A local-first Warsaw transit control room: see the bus and tram network with live vehicle positions and per-line punctuality, then check how passengers would be rerouted around a stop or line closure or slowdown.**
 
 [![CI](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -8,7 +8,7 @@
 ![FastAPI + PostGIS](https://img.shields.io/badge/FastAPI-PostGIS-009688.svg)
 ![React + MapLibre](https://img.shields.io/badge/React-MapLibre-3178c6.svg)
 
-![Closing a stop in central Warsaw: affected lines in red, nearby alternative stops in green](docs/disruption-analysis.jpg)
+![Closing a stop in central Warsaw: affected lines in red, trips affected, added minutes and rerouted journeys on the right](docs/rerouting.jpg)
 
 ## What it does
 
@@ -18,9 +18,15 @@
 - **Line punctuality** – each live vehicle reports the GTFS trip it runs; its position is projected onto that trip's stops and compared with the interpolated scheduled time. Per-line summaries (early / on time / late, mean and median delay) are stored at most once a minute and shown as a punctuality chart with a delay trend per line (30 min, 2 h or 6 h window).
 - **Bilingual UI** – Polish and English.
 
-| Network overview | Closure detail |
+| Line punctuality | Network overview |
 | --- | --- |
-| ![318 lines, 7,253 stops and live vehicles on the map](docs/network-overview.jpg) | ![Zoomed-in view of a closed stop and the nearest alternatives](docs/closure-detail.jpg) |
+| ![Share of early, on-time and late vehicles per line from live positions, with the mean delay trend of line 9](docs/punctuality.jpg) | ![318 lines, 7,253 stops and live vehicles on the map](docs/network-overview.jpg) |
+
+| Closure detail |
+| --- |
+| ![Zoomed-in view of a closed stop and the nearest alternatives](docs/closure-detail.jpg) |
+
+Screenshots are from the live Warsaw data on 10 October 2026 (timetable imported, ~1,000 vehicles in the feed, about 30 minutes of punctuality snapshots).
 
 ## Architecture
 
@@ -110,7 +116,8 @@ The remaining cost is pure-Python Dijkstra: closing a long line samples up to ei
 - Delay estimates use straight lines between stops rather than the route shape, so a vehicle on a winding section can be placed slightly off; stop dwell times are not modelled. Snapshots are only taken while someone has the map open or `collect_delays` runs, and the demo network shows a clearly labelled fictional punctuality history.
 - The schema is created with `create_all` at startup, with an in-place column type fix; Alembic migrations would replace this.
 - Results are timetable estimates, not an official forecast or passenger count: there is no demand data, departures are averaged into a headway (no exact connection times), and a closed line is assumed to have no replacement service. The legacy impact score (affected stops × duration) is still returned for compatibility.
-- Tests cover data parsing and analysis helpers; there are no API-level tests against PostGIS or frontend tests yet.
+- The graph and network caches live in the API process, which suits the single-worker Compose setup; several workers would each build their own copy (~0.5 s on first use). Line closures on long routes still take a few hundred ms in pure-Python Dijkstra; A* or contraction hierarchies would be the next step.
+- Tests cover GTFS parsing, routing and delay estimation without a database; there are no API-level tests against PostGIS or frontend tests yet.
 
 ## Data and attribution
 
