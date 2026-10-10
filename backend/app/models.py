@@ -38,7 +38,7 @@ class RouteStop(Base):
         ForeignKey("routes.id", ondelete="CASCADE"), primary_key=True
     )
     stop_id: Mapped[str] = mapped_column(
-        ForeignKey("stops.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("stops.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
 

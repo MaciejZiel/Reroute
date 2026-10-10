@@ -25,6 +25,10 @@ async def lifespan(_: FastAPI):
                 "TYPE geometry(Geometry, 4326) USING shape::geometry(Geometry, 4326)"
             )
         )
+        # create_all only indexes new tables; add indexes introduced later to older databases.
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_route_stops_stop_id ON route_stops (stop_id)")
+        )
     with SessionLocal() as session:
         seed_demo_network(session)
     yield

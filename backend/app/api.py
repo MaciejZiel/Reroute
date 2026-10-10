@@ -1,15 +1,17 @@
 """Read-only network endpoints and explainable disruption simulations."""
 
 import csv
+import gzip
 import io
 import json
 import math
+import threading
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from statistics import median
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
 from sqlalchemy import distinct, func, select
@@ -64,6 +66,7 @@ from .schemas import (
 from .schemas import Detour as DetourResponse
 
 router = APIRouter(prefix="/api")
+FEED_ID = "warsaw-static-gtfs"
 DEMO_NOTICE = "Demo network. Vehicles and routes are fictional and do not describe real service."
 
 
@@ -80,9 +83,27 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
     )
 
 
+_network_cache: dict[object, tuple[bytes, bytes]] = {}
+
+
 @router.get("/network", response_model=FeatureCollection, tags=["network"])
-def network(db: Session = Depends(get_db)) -> FeatureCollection:
+def network(request: Request, db: Session = Depends(get_db)) -> Response:
+    """The whole network as GeoJSON, serialised and gzipped once per imported timetable."""
     has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
+    key = (has_schedule, _network_version(db, not has_schedule))
+    if key not in _network_cache:
+        body = _network_collection(db, has_schedule).model_dump_json().encode()
+        _network_cache.clear()
+        _network_cache[key] = (body, gzip.compress(body, compresslevel=6))
+    body, compressed = _network_cache[key]
+    headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache"}
+    if "gzip" in request.headers.get("accept-encoding", ""):
+        headers["Content-Encoding"] = "gzip"
+        return Response(compressed, media_type="application/json", headers=headers)
+    return Response(body, media_type="application/json", headers=headers)
+
+
+def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     demo_filter = not has_schedule
     routes = db.scalars(select(Route).where(Route.is_demo.is_(demo_filter))).all()
     stops = db.scalars(select(Stop).where(Stop.is_demo.is_(demo_filter))).all()
@@ -109,7 +130,7 @@ def network(db: Session = Depends(get_db)) -> FeatureCollection:
         )
         for stop in stops
     )
-    metadata = db.get(FeedMetadata, "warsaw-static-gtfs") if has_schedule else None
+    metadata = db.get(FeedMetadata, FEED_ID) if has_schedule else None
     notice = _schedule_notice(metadata) if has_schedule else DEMO_NOTICE
     return FeatureCollection(
         features=features,
@@ -424,7 +445,32 @@ def simulate(
     )
 
 
+_graph_cache: dict[bool, tuple[object, TransitGraph]] = {}
+_graph_lock = threading.Lock()
+
+
 def load_graph(db: Session, is_demo: bool) -> TransitGraph:
+    """Stop graph of the demo network or the imported timetable, rebuilt after an import."""
+    version = _network_version(db, is_demo)
+    cached = _graph_cache.get(is_demo)
+    if cached and cached[0] == version:
+        return cached[1]
+    with _graph_lock:
+        cached = _graph_cache.get(is_demo)
+        if cached and cached[0] == version:
+            return cached[1]
+        graph = build_graph(db, is_demo)
+        _graph_cache[is_demo] = (version, graph)
+        return graph
+
+
+def _network_version(db: Session, is_demo: bool) -> object:
+    if is_demo:
+        return "demo"  # seeded once at startup, before any request
+    return db.scalar(select(FeedMetadata.downloaded_at).where(FeedMetadata.id == FEED_ID))
+
+
+def build_graph(db: Session, is_demo: bool) -> TransitGraph:
     """Build the stop graph of either the demo network or the imported timetable."""
     stops = db.execute(
         select(Stop.id, Stop.name, Stop.latitude, Stop.longitude).where(Stop.is_demo.is_(is_demo))
