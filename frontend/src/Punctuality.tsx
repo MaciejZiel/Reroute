@@ -6,7 +6,7 @@ import type { Language, LinePunctuality, PunctualityResult } from "./types";
 type T = (key: Parameters<typeof translate>[1]) => string;
 
 const WINDOWS = [30, 120, 360];
-const MAX_LINES = 14;
+const MAX_LINES = 10;
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
