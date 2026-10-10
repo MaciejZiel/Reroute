@@ -21,7 +21,7 @@ from shapely.geometry import LineString, MultiLineString, Point
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
-from .models import FeedMetadata, Route, RouteSegment, RouteStop, Stop
+from .models import FeedMetadata, Route, RouteSegment, RouteStop, Stop, StopPattern, TripSchedule
 
 DEFAULT_GTFS_URL = "https://mkuran.pl/gtfs/warsaw.zip"
 DEFAULT_VEHICLES_URL = "https://mkuran.pl/gtfs/warsaw/vehicles.pb"
@@ -64,6 +64,16 @@ class ParsedSegment:
 
 
 @dataclass(frozen=True)
+class ParsedTrip:
+    """Stop ids and scheduled departures (seconds after service-day midnight) of one trip."""
+
+    trip_id: str
+    route_id: str
+    pattern_id: int
+    departures: str
+
+
+@dataclass(frozen=True)
 class ParsedSchedule:
     stops: tuple[ParsedStop, ...]
     routes: tuple[ParsedRoute, ...]
@@ -75,6 +85,8 @@ class ParsedSchedule:
     attributions: str
     segments: tuple[ParsedSegment, ...] = ()
     service_date: str = ""
+    trips: tuple[ParsedTrip, ...] = ()
+    patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +98,7 @@ class LiveVehicle:
     longitude: float
     observed_at: datetime
     is_stale: bool
+    trip_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -270,6 +283,8 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         attributions=attributions,
         segments=segments,
         service_date=service_date,
+        trips=tuple(trip for trip in segment_builder.schedules if trip.route_id in retained_ids),
+        patterns=tuple(segment_builder.patterns),
     )
 
 
@@ -277,6 +292,8 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
     """Replace only live GTFS records and preserve the fictional demo fallback."""
     live_route_ids = select(Route.id).where(Route.is_demo.is_(False))
     session.execute(delete(RouteSegment).where(RouteSegment.route_id.in_(live_route_ids)))
+    session.execute(delete(TripSchedule))
+    session.execute(delete(StopPattern))
     session.execute(delete(RouteStop).where(RouteStop.route_id.in_(live_route_ids)))
     session.execute(delete(Route).where(Route.is_demo.is_(False)))
     session.execute(delete(Stop).where(Stop.is_demo.is_(False)))
@@ -324,6 +341,27 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
                     "service_minutes": item.service_minutes,
                 }
                 for item in schedule.segments
+            ],
+        )
+    if schedule.patterns:
+        session.execute(
+            insert(StopPattern),
+            [
+                {"id": pattern_id, "stop_ids": stop_ids}
+                for pattern_id, stop_ids in enumerate(schedule.patterns)
+            ],
+        )
+    for start in range(0, len(schedule.trips), 5000):
+        session.execute(
+            insert(TripSchedule),
+            [
+                {
+                    "trip_id": trip.trip_id,
+                    "route_id": trip.route_id,
+                    "pattern_id": trip.pattern_id,
+                    "departures": trip.departures,
+                }
+                for trip in schedule.trips[start : start + 5000]
             ],
         )
     session.merge(
@@ -411,6 +449,7 @@ def get_live_vehicles(session: Session, force: bool = False) -> LiveVehicleSnaps
                         longitude=longitude,
                         observed_at=observed_at,
                         is_stale=(datetime.now(UTC) - observed_at).total_seconds() > 120,
+                        trip_id=vehicle.trip.trip_id if vehicle.HasField("trip") else "",
                     )
                 )
             snapshot = LiveVehicleSnapshot(
@@ -486,14 +525,15 @@ class _SegmentBuilder:
         self.runs: dict[tuple[str, str, str], list[int]] = defaultdict(list)
         self.first_departure: dict[tuple[str, str, str], int] = {}
         self.last_departure: dict[tuple[str, str, str], int] = {}
+        self.schedules: list[ParsedTrip] = []
+        self.patterns: dict[str, int] = {}
 
     def add(self, row: dict[str, str]) -> None:
         trip_id = row.get("trip_id", "")
         if trip_id != self.trip_id:
             self.flush()
             self.trip_id = trip_id
-        timed = self.trips is None or trip_id in self.trips
-        if trip_id not in self.trip_routes or not timed:
+        if trip_id not in self.trip_routes:
             return
         arrival = _gtfs_seconds(row.get("arrival_time", ""))
         departure = _gtfs_seconds(row.get("departure_time", "")) or arrival
@@ -509,6 +549,21 @@ class _SegmentBuilder:
         if self.rows and self.trip_id in self.trip_routes:
             route_id = self.trip_routes[self.trip_id][0]
             ordered = sorted(self.rows)
+            # Every trip keeps its compact timetable, used to estimate live delays.
+            # Trips share a few thousand stop patterns, so stop ids are stored once per pattern.
+            pattern = ",".join(stop_id for _, stop_id, _, _ in ordered)
+            pattern_id = self.patterns.setdefault(pattern, len(self.patterns))
+            self.schedules.append(
+                ParsedTrip(
+                    self.trip_id,
+                    route_id,
+                    pattern_id,
+                    ",".join(str(departure) for _, _, _, departure in ordered),
+                )
+            )
+            if self.trips is not None and self.trip_id not in self.trips:
+                self.rows = []
+                return
             for (_, from_stop, _, departure), (_, to_stop, arrival, _) in zip(
                 ordered, ordered[1:], strict=False
             ):

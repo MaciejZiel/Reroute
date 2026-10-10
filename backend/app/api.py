@@ -4,18 +4,29 @@ import csv
 import io
 import json
 import math
-from datetime import UTC, datetime
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from statistics import median
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
 from sqlalchemy import distinct, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .data_sources import get_live_vehicles
+from .data_sources import LiveVehicleSnapshot, get_live_vehicles
 from .database import get_db
+from .delays import (
+    EARLY_LIMIT_S,
+    LATE_LIMIT_S,
+    VehicleDelay,
+    delays_for_snapshot,
+    demo_line_delays,
+)
 from .models import (
+    DelaySnapshot,
     FeedMetadata,
     Route,
     RouteSegment,
@@ -42,6 +53,9 @@ from .schemas import (
     FeatureCollection,
     HealthResponse,
     JourneyLeg,
+    LinePunctuality,
+    PunctualityPoint,
+    PunctualityResponse,
     RouteLabel,
     RoutingSummary,
     SimulationRequest,
@@ -109,6 +123,7 @@ def network(db: Session = Depends(get_db)) -> FeatureCollection:
 def vehicles(db: Session = Depends(get_db)) -> FeatureCollection:
     live_snapshot = get_live_vehicles(db)
     if live_snapshot.vehicles:
+        delays = {item.vehicle_id: item.delay_seconds for item in _safe_delays(db, live_snapshot)}
         return FeatureCollection(
             features=[
                 _feature(
@@ -121,6 +136,7 @@ def vehicles(db: Session = Depends(get_db)) -> FeatureCollection:
                         "mode": vehicle.mode,
                         "observed_at": vehicle.observed_at.isoformat(),
                         "is_stale": vehicle.is_stale,
+                        "delay_seconds": delays.get(vehicle.id),
                     },
                 )
                 for vehicle in live_snapshot.vehicles
@@ -157,6 +173,104 @@ def vehicles(db: Session = Depends(get_db)) -> FeatureCollection:
             else DEMO_NOTICE
         ),
     )
+
+
+@router.get("/punctuality", response_model=PunctualityResponse, tags=["vehicles"])
+def punctuality(
+    minutes: int = Query(default=120, ge=10, le=24 * 60),
+    db: Session = Depends(get_db),
+) -> PunctualityResponse:
+    """Per-line delay history estimated from live positions against the timetable."""
+    now = datetime.now(UTC)
+    has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
+    if has_schedule:
+        _safe_delays(db, get_live_vehicles(db))
+        rows = db.scalars(
+            select(DelaySnapshot)
+            .where(DelaySnapshot.observed_at >= now - timedelta(minutes=minutes))
+            .order_by(DelaySnapshot.observed_at)
+        ).all()
+        notice = (
+            "Delays estimated by projecting live vehicle positions (Miasto Stołeczne Warszawa, "
+            "GTFS-Realtime by Mikołaj Kuranowski) onto the ZTM GTFS timetable of the trip "
+            "each vehicle reports. Snapshots are stored at most once a minute while the app "
+            "is in use."
+        )
+    else:
+        demo_lines = db.execute(
+            select(Route.short_name, Route.mode)
+            .where(Route.is_demo.is_(True))
+            .order_by(Route.short_name)
+        ).all()
+        rows = [
+            row
+            for row in demo_line_delays(now, [tuple(line) for line in demo_lines])
+            if row.observed_at >= now - timedelta(minutes=minutes)
+        ]
+        notice = (
+            "Demo network: the punctuality history is fictional. Import the Warsaw timetable "
+            "to estimate real delays from live positions."
+        )
+    return PunctualityResponse(
+        data_mode="live" if has_schedule else "demo",
+        window_minutes=minutes,
+        snapshots=len({row.observed_at for row in rows}),
+        observed_from=rows[0].observed_at if rows else None,
+        observed_to=rows[-1].observed_at if rows else None,
+        on_time_definition=(
+            f"On time: between {-EARLY_LIMIT_S // 60} min early and {LATE_LIMIT_S // 60} min late."
+        ),
+        lines=_line_punctuality(rows),
+        notice=notice,
+    )
+
+
+def _safe_delays(db: Session, snapshot: LiveVehicleSnapshot) -> list[VehicleDelay]:
+    try:
+        return delays_for_snapshot(db, snapshot)
+    except SQLAlchemyError:
+        db.rollback()
+        return []
+
+
+def _line_punctuality(rows: list[DelaySnapshot]) -> list[LinePunctuality]:
+    by_line: dict[tuple[str, str], list[DelaySnapshot]] = defaultdict(list)
+    for row in rows:
+        by_line[(row.line, row.mode)].append(row)
+    result = []
+    for (line, mode), snapshots in by_line.items():
+        observations = sum(row.vehicles for row in snapshots)
+        if not observations:
+            continue
+        result.append(
+            LinePunctuality(
+                line=line,
+                mode=mode,
+                observations=observations,
+                mean_delay_minutes=round(
+                    sum(row.mean_delay_seconds * row.vehicles for row in snapshots)
+                    / observations
+                    / 60,
+                    1,
+                ),
+                median_delay_minutes=round(
+                    median(row.median_delay_seconds for row in snapshots) / 60, 1
+                ),
+                early_share=round(sum(row.early for row in snapshots) / observations, 3),
+                on_time_share=round(sum(row.on_time for row in snapshots) / observations, 3),
+                late_share=round(sum(row.late for row in snapshots) / observations, 3),
+                series=[
+                    PunctualityPoint(
+                        observed_at=row.observed_at,
+                        vehicles=row.vehicles,
+                        mean_delay_minutes=round(row.mean_delay_seconds / 60, 1),
+                        on_time_share=round(row.on_time / row.vehicles, 3) if row.vehicles else 0,
+                    )
+                    for row in snapshots
+                ],
+            )
+        )
+    return sorted(result, key=lambda item: (-item.observations, item.line))
 
 
 @router.post("/simulations", response_model=SimulationResponse, tags=["simulations"])

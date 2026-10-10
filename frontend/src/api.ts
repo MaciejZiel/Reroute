@@ -1,4 +1,4 @@
-import type { FeatureCollection, SimulationResult } from "./types";
+import type { FeatureCollection, PunctualityResult, SimulationResult } from "./types";
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 
@@ -14,6 +14,10 @@ export function fetchNetwork(): Promise<FeatureCollection> {
 
 export function fetchVehicles(): Promise<FeatureCollection> {
   return getJson<FeatureCollection>("vehicles");
+}
+
+export function fetchPunctuality(minutes: number): Promise<PunctualityResult> {
+  return getJson<PunctualityResult>(`punctuality?minutes=${minutes}`);
 }
 
 export async function postSimulation(input: {
