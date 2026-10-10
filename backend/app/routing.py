@@ -33,6 +33,8 @@ MAX_WAIT_S = 900
 MAX_SEARCH_S = 3 * 3600
 STOPS_AROUND_DISRUPTION = 2
 SAMPLED_STOPS_PER_ROUTE = 5
+BASELINE_CACHE_SIZE = 4096
+DETOUR_BUDGET_S = 3600
 
 DisruptionKind = Literal["closure", "slowdown"]
 
@@ -155,6 +157,7 @@ class TransitGraph:
         self.stops: dict[str, GraphStop] = {stop.id: stop for stop in stops}
         self.routes: dict[str, GraphRoute] = {route.id: route for route in routes}
         self.segments_from: dict[str, list[Segment]] = defaultdict(list)
+        self.segments_on_route: dict[State, list[Segment]] = defaultdict(list)
         self.segments_by_route: dict[str, list[Segment]] = defaultdict(list)
         self.segments_by_stop: dict[str, list[Segment]] = defaultdict(list)
         for segment in segments:
@@ -166,11 +169,18 @@ class TransitGraph:
             ):
                 continue
             self.segments_from[segment.from_stop].append(segment)
+            self.segments_on_route[(segment.from_stop, segment.route_id)].append(segment)
             self.segments_by_route[segment.route_id].append(segment)
             self.segments_by_stop[segment.from_stop].append(segment)
             self.segments_by_stop[segment.to_stop].append(segment)
         self.board_wait = self._board_waits()
+        self.boardings: dict[str, list[tuple[State, int]]] = defaultdict(list)
+        for key, wait in self.board_wait.items():
+            self.boardings[key[0]].append((key, wait))
         self.walks = self._walking_edges(walk_radius_m)
+        # Undisrupted searches repeat across queries (the same stops get sampled again), and
+        # the graph never changes, so their results can be reused.
+        self._baseline_cache: dict[tuple[str, frozenset[str]], dict[str, Journey]] = {}
 
     @property
     def segment_count(self) -> int:
@@ -270,6 +280,23 @@ class TransitGraph:
     ) -> dict[str, Journey]:
         """Dijkstra from one origin stop; stops early once every target is settled."""
         remaining = {target for target in targets if target in self.stops and target != origin}
+        if disruption is None and max_seconds == MAX_SEARCH_S:
+            key = (origin, frozenset(remaining))
+            if key not in self._baseline_cache:
+                if len(self._baseline_cache) >= BASELINE_CACHE_SIZE:
+                    self._baseline_cache.clear()
+                self._baseline_cache[key] = self._search(origin, remaining, None, max_seconds)
+            return self._baseline_cache[key]
+        return self._search(origin, remaining, disruption, max_seconds)
+
+    def _search(
+        self,
+        origin: str,
+        remaining: set[str],
+        disruption: Disruption | None,
+        max_seconds: int,
+    ) -> dict[str, Journey]:
+        remaining = set(remaining)
         found: dict[str, Journey] = {}
         if origin not in self.stops or not remaining:
             return found
@@ -301,18 +328,16 @@ class TransitGraph:
         if not route_id:
             for other, seconds in self.walks.get(stop_id, ()):
                 yield (other, ""), "walk", seconds
-            boarded: set[str] = set()
-            for segment in self.segments_from.get(stop_id, ()):
-                if segment.route_id in boarded or self._weight(segment, disruption) is None:
+            for (_, line), wait in self.boardings.get(stop_id, ()):
+                if disruption is not None and all(
+                    self._weight(segment, disruption) is None
+                    for segment in self.segments_on_route[(stop_id, line)]
+                ):
                     continue
-                boarded.add(segment.route_id)
-                wait = self.board_wait.get((stop_id, segment.route_id), MAX_WAIT_S)
-                yield (stop_id, segment.route_id), "board", wait + TRANSFER_PENALTY_S
+                yield (stop_id, line), "board", wait + TRANSFER_PENALTY_S
             return
         yield (stop_id, ""), "alight", 0
-        for segment in self.segments_from.get(stop_id, ()):
-            if segment.route_id != route_id:
-                continue
+        for segment in self.segments_on_route.get(state, ()):
             weight = self._weight(segment, disruption)
             if weight is not None:
                 yield (segment.to_stop, route_id), "ride", weight
@@ -395,7 +420,12 @@ def analyse_disruption(
     detours = []
     for origin, destinations in by_origin.items():
         baseline = graph.shortest_paths(origin, destinations)
-        disrupted = graph.shortest_paths(origin, destinations, disruption)
+        # A detour more than an hour longer than the usual journey counts as no alternative;
+        # the bound also stops the search from sweeping the whole city for unreachable stops.
+        budget = max((journey.seconds for journey in baseline.values()), default=0)
+        disrupted = graph.shortest_paths(
+            origin, destinations, disruption, min(budget + DETOUR_BUDGET_S, MAX_SEARCH_S)
+        )
         for destination in destinations:
             if destination not in baseline:
                 continue

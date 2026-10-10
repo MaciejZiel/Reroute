@@ -152,3 +152,15 @@ def test_route_chains_follow_each_direction(graph: TransitGraph) -> None:
     chains = graph.route_chains("1")
 
     assert sorted(chains) == [["A", "B", "C", "D", "E"], ["E", "D", "C", "B", "A"]]
+
+
+def test_undisrupted_searches_are_cached_but_disrupted_ones_are_not(graph: TransitGraph) -> None:
+    closure = Disruption("closure", stop_ids=frozenset({"C"}))
+
+    first = graph.shortest_paths("A", ["E", "D"])
+    again = graph.shortest_paths("A", ["D", "E"])
+    disrupted = graph.shortest_paths("A", ["E"], closure)
+
+    assert again is first
+    assert graph.shortest_paths("A", ["E"], closure) is not disrupted
+    assert disrupted["E"].seconds > first["E"].seconds
