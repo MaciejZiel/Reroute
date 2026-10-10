@@ -70,11 +70,31 @@ Repeat imports reuse the cached archive; pass `--force-download` to fetch the la
 ```bash
 cd backend
 uv sync --extra dev        # or: pip install -e '.[dev]'
-uv run pytest -q           # 25 tests
+uv run pytest -q           # 26 tests
 uv run ruff check . && uv run ruff format --check .
 ```
 
 The tests build a small GTFS archive in a temporary directory and stub the HTTP client, so they need neither a database nor network access. They cover GTFS parsing (bus/tram shapes, extended route types, rejecting incomplete archives, timed segments on the busiest service day), rerouting on a small fixture network (closure vs. slowdown, transfers, walking, trips in the window), delay estimation against a trimmed recording of the real Warsaw vehicle feed and the matching timetables (`backend/tests/fixtures/`), service days after midnight, the live feed (route mapping, dropping positions outside Warsaw, demo fallback on failure) and the nearby-stop distance logic. CI runs the backend lint and tests plus the frontend type check and build.
+
+## Performance
+
+Measured on the full Warsaw network (318 bus and tram lines, 7,253 stops, 20,164 timed segments; feed of 9 Oct 2026) with the stack running in Docker Compose on a 16-thread laptop, using `backend/scripts/benchmark_api.py --runs 60 --seed 7` (random stops and lines from the network, closures and slowdowns alternating, 30 min):
+
+| Request | Before (`main` at #3) p50 / p95 | After p50 / p95 |
+| --- | --- | --- |
+| `POST /api/simulations`, stop | 397 / 487 ms | 30 / 84 ms |
+| `POST /api/simulations`, line | 465 / 846 ms | 105 / 483 ms |
+| `POST /api/simulations`, all | 416 / 756 ms | 59 / 442 ms |
+| `GET /api/network` | 731 ms, 10.5 MB | 65 ms, 2.4 MB gzip |
+
+What changed:
+
+- **Graph cache.** The stop graph (stops, segments, ~55k walking links from a lat/lon grid) took ~0.35 s to load and build on every request. It is now built once per data mode and timetable version (`feed_metadata.downloaded_at`), so a re-import invalidates it; the first query after start-up still pays ~0.5 s.
+- **Search reuse and bounds.** Undisrupted searches are cached per origin and target set (the graph is immutable), edges are pre-grouped per stop and line, and a disrupted search stops one hour past the usual journey time instead of sweeping the city for unreachable stops.
+- **Network response.** The 10.5 MB GeoJSON is serialised and gzipped once per timetable instead of on every page load.
+- **Index.** `route_stops(stop_id)` for the "lines at these stops" lookups (the primary key starts with `route_id`).
+
+The remaining cost is pure-Python Dijkstra: closing a long line samples up to eight journeys of 30–60 min across the city, and each search settles several thousand states.
 
 ## Key technical decisions
 
