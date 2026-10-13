@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Engine, select, text
@@ -41,6 +41,8 @@ class FeatureRow:
     weekday: int
     route_mean_delay_s: float | None
     active_alerts: int
+    # Inputs of the trained model by name; None when the trip has no recorded stop yet.
+    model_inputs: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,11 @@ def slope_per_minute(points: Sequence[tuple[datetime, int]]) -> float | None:
 
 
 def live_feature_rows(
-    db: Session, targets: Sequence[Target], now: datetime, with_history: bool = True
+    db: Session,
+    targets: Sequence[Target],
+    now: datetime,
+    with_history: bool = True,
+    with_model_inputs: bool = False,
 ) -> list[FeatureRow]:
     trips = sorted({target.trip_id for target in targets})
     vehicles = sorted({target.vehicle_id for target in targets if target.vehicle_id})
@@ -108,7 +114,32 @@ def live_feature_rows(
                 active_alerts=alerts.get(target.route_id, 0),
             )
         )
+    if with_model_inputs and targets:
+        rows = _with_model_inputs(db, rows, targets, now)
     return rows
+
+
+def _with_model_inputs(
+    db: Session, rows: list[FeatureRow], targets: Sequence[Target], now: datetime
+) -> list[FeatureRow]:
+    from .ml.featurize import TargetStop
+    from .ml.live import load_index, model_inputs
+
+    specs = [
+        TargetStop(t.trip_id, t.stop_seq, t.stop_id, t.line, t.scheduled_at.timestamp())
+        for t in targets
+    ]
+    index = load_index(
+        db,
+        sorted({spec.trip_id for spec in specs}),
+        sorted({spec.line for spec in specs}),
+        sorted({spec.stop_id for spec in specs}),
+        now,
+    )
+    return [
+        replace(row, model_inputs=inputs)
+        for row, inputs in zip(rows, model_inputs(index, specs, now), strict=True)
+    ]
 
 
 def _trends(db: Session, vehicle_ids: list[str], now: datetime) -> dict[str, float]:

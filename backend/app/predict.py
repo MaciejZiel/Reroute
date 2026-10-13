@@ -1,18 +1,21 @@
 """Delay prediction seam: a ``Predictor`` turns feature rows into predicted delays.
 
 The shipped ``BaselinePredictor`` assumes the current delay of the trip persists. A trained model
-is a class with the same two methods; select it with ``PREDICTOR=package.module:ClassName``.
+(``app.ml``) is picked up from a file, see ``get_predictor``.
 """
 
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .features import FeatureRow
+from .ml.explain import Explanation
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,7 @@ class Prediction:
     # "live_delay": derived from the delay of the vehicle running the trip.
     # "scheduled": no live vehicle, so the timetable is the best estimate.
     basis: str = "scheduled"
+    explanation: Explanation | None = None
 
 
 class Predictor(Protocol):
@@ -51,15 +55,51 @@ class BaselinePredictor:
 
 _predictor: Predictor | None = None
 
+DEFAULT_MODEL_FILE = Path(__file__).resolve().parents[1] / "models" / "delay_model.json"
+log = logging.getLogger(__name__)
+
+
+def load_model_predictor(path: Path) -> Predictor:
+    from .ml.model import DelayModel, ModelPredictor
+
+    return ModelPredictor(DelayModel.load(path))
+
+
+def _auto_predictor() -> Predictor:
+    """The trained model if its file exists and its card says it beat the baselines on held-out
+    future data; otherwise the baseline. Retraining replaces the file; nothing else changes."""
+    path = Path(os.getenv("DELAY_MODEL_FILE") or DEFAULT_MODEL_FILE)
+    if not path.is_file():
+        return BaselinePredictor()
+    try:
+        predictor = load_model_predictor(path)
+    except (OSError, ValueError, KeyError) as error:
+        log.warning("ignoring unreadable delay model %s: %s", path, error)
+        return BaselinePredictor()
+    if not predictor.model.promoted:  # type: ignore[attr-defined]
+        log.info(
+            "delay model %s did not beat the baseline; serving the baseline", predictor.version
+        )
+        return BaselinePredictor()
+    return predictor
+
 
 def get_predictor() -> Predictor:
-    """The configured predictor, created once."""
+    """The configured predictor, created once.
+
+    ``PREDICTOR=model`` serves the model file whatever its card says, ``PREDICTOR=pkg.mod:Class``
+    a custom class, and nothing set picks the promoted model if there is one.
+    """
     global _predictor
     if _predictor is None:
         spec = os.getenv("PREDICTOR", "")
-        if spec:
+        if spec == "model":
+            _predictor = load_model_predictor(
+                Path(os.getenv("DELAY_MODEL_FILE") or DEFAULT_MODEL_FILE)
+            )
+        elif spec:
             module_name, _, class_name = spec.partition(":")
             _predictor = getattr(importlib.import_module(module_name), class_name)()
         else:
-            _predictor = BaselinePredictor()
+            _predictor = _auto_predictor()
     return _predictor

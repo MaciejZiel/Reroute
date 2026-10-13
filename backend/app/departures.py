@@ -195,7 +195,13 @@ def _predict(
         )
         for c in candidates
     ]
-    rows = live_feature_rows(db, targets, now, with_history=predictor.kind != "baseline")
+    rows = live_feature_rows(
+        db,
+        targets,
+        now,
+        with_history=predictor.kind != "baseline",
+        with_model_inputs=predictor.kind == "model",
+    )
     for candidate, prediction in zip(candidates, predictor.predict(rows), strict=True):
         candidate.prediction = prediction
 
