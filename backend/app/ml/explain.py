@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 NOTABLE_S = 5.0  # smaller effects are noise to a rider
 MAX_FACTORS = 3
@@ -104,7 +105,7 @@ class _Polish:
     main = "{lead}. Główne czynniki: {factors}."
 
 
-_LANG = {"en": _English, "pl": _Polish}
+_LANG: dict[str, Any] = {"en": _English, "pl": _Polish}
 
 # Each phrase takes the feature value and returns a clause that continues "because ...".
 _PHRASES: dict[str, dict[str, Callable[..., str]]] = {
