@@ -32,7 +32,7 @@ def duration(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds} s"
     minutes, rest = divmod(seconds, 60)
-    return f"{minutes} min" if rest < 5 else f"{minutes} min {rest} s"
+    return f"{minutes} min" if rest == 0 else f"{minutes} min {rest} s"
 
 
 def delay_phrase(seconds: float) -> str:
@@ -45,7 +45,10 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-_PHRASES: dict[str, Callable[[float], str]] = {
+_PHRASES: dict[str, Callable[..., str]] = {
+    "distance": lambda v: (
+        f"the stop is {_plural(round(v[0]), 'stop')} ahead, {duration(v[1])} of running time"
+    ),
     "stops_ahead": lambda v: f"the stop is {_plural(round(v), 'stop')} ahead",
     "vehicle_delay_s": lambda v: f"the vehicle is {delay_phrase(v)} right now",
     "vehicle_minus_origin_s": lambda v: (
@@ -63,6 +66,7 @@ _PHRASES: dict[str, Callable[[float], str]] = {
         f"its delay has been {'growing' if v > 0 else 'shrinking'} by about "
         f"{abs(v):.0f} s per minute"
     ),
+    "seconds_since_origin": lambda v: f"its last recorded stop was {duration(v)} ago",
     "sched_run_s": lambda v: f"{duration(v)} of scheduled running time remain",
     "stop_seq": lambda v: f"this is stop number {round(v)} of the trip",
     "hour_frac": lambda v: "of the time of day",
@@ -79,6 +83,22 @@ _PHRASES: dict[str, Callable[[float], str]] = {
 }
 
 
+def _merge_distance(items: list[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
+    """Stops ahead and scheduled running time measure the same thing and often pull in opposite
+    directions; a rider should read one "distance" factor, not two that cancel."""
+    found = {name: (value, effect) for name, value, effect in items}
+    if "stops_ahead" not in found or "sched_run_s" not in found:
+        return items
+    stops, run = found["stops_ahead"][0], found["sched_run_s"][0]
+    effect = found["stops_ahead"][1] + found["sched_run_s"][1]
+    rest = [item for item in items if item[0] not in ("stops_ahead", "sched_run_s")]
+    return [*rest, ("distance", (stops, run), effect)]  # type: ignore[list-item]
+
+
+def _missing(value: float | tuple[float, float]) -> bool:
+    return isinstance(value, float) and math.isnan(value)
+
+
 def explain(
     names: Sequence[str],
     values: Sequence[float],
@@ -87,10 +107,12 @@ def explain(
     predicted_delay_s: float,
 ) -> Explanation:
     """Top contributing factors, largest effect first, as short sentences."""
-    ranked = sorted(zip(names, values, contributions, strict=True), key=lambda i: -abs(i[2]))
+    items = list(zip(names, values, contributions, strict=True))
+    items = _merge_distance(items)
+    ranked = sorted(items, key=lambda i: -abs(i[2]))
     factors = []
     for name, value, effect in ranked:
-        if abs(effect) < NOTABLE_S or math.isnan(value) or name not in _PHRASES:
+        if abs(effect) < NOTABLE_S or name not in _PHRASES or _missing(value):
             continue
         text = _PHRASES[name](value)
         text = text if text.startswith("of ") else text[0].upper() + text[1:]
