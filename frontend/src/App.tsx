@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapCanvas, { type MapRequest } from "./MapCanvas";
 import MapControls from "./MapControls";
+import ModelPanel from "./ModelPanel";
 import Panel from "./Panel";
 import Punctuality from "./Punctuality";
 import SearchBox from "./SearchBox";
@@ -29,6 +30,7 @@ export default function App() {
   const [showBuses, setShowBuses] = useState(true);
   const [showTrams, setShowTrams] = useState(true);
   const [showPunctuality, setShowPunctuality] = useState(false);
+  const [showModel, setShowModel] = useState(false);
   const [zoomedOut, setZoomedOut] = useState(true);
   const [sheet, setSheet] = useState<Sheet>("peek");
   const [fit, setFit] = useState<MapRequest<[[number, number], [number, number]]> | null>(null);
@@ -171,9 +173,11 @@ export default function App() {
             <SearchBox t={t} onPick={pickSearch} />
             <MapControls t={t} showAll={showAll} onShowAll={setShowAll} allowShowAll={!focus.lineId} vehicleCount={vehicleCount}
               showBuses={showBuses} showTrams={showTrams} onBuses={setShowBuses} onTrams={setShowTrams}
-              punctuality={showPunctuality} onPunctuality={() => setShowPunctuality(!showPunctuality)} zoomedOut={zoomedOut && !focus.lineId} />
+              punctuality={showPunctuality} onPunctuality={() => { setShowPunctuality(!showPunctuality); setShowModel(false); }}
+              model={showModel} onModel={() => { setShowModel(!showModel); setShowPunctuality(false); }} zoomedOut={zoomedOut && !focus.lineId} />
           </div>
           {showPunctuality && <Punctuality language={language} t={t} onClose={() => setShowPunctuality(false)}/>}
+          {showModel && <ModelPanel language={language} t={t} onClose={() => setShowModel(false)}/>}
           {!networkData && <div className="map-loading"><span className="loading-ring"/>{t("loading")}</div>}
           <div className="map-legend" aria-label={t("legend")}>
             <span><i className="tile bus"/>{t("buses")}</span><span><i className="tile tram"/>{t("trams")}</span><span><i className="tile both"/>{t("both")}</span>

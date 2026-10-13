@@ -1,6 +1,7 @@
 import type {
   FeatureCollection,
   LineDetail,
+  ModelCard,
   PunctualityResult,
   StopDepartures,
   StopSearchResponse,
@@ -35,3 +36,4 @@ export const fetchLine = (line: string, signal?: AbortSignal) => getJson<LineDet
 export const fetchLineVehicles = (line: string, signal?: AbortSignal) => getJson<FeatureCollection>(`lines/${enc(line)}/vehicles`, signal);
 // Vehicle ids contain slashes (V/9/032) and the route takes them as a path, so only encode the parts.
 export const fetchVehicle = (id: string, language: string, signal?: AbortSignal) => getJson<VehicleDetail>(`vehicles/${id.split("/").map(enc).join("/")}?lang=${language}`, signal);
+export const fetchModel = (signal?: AbortSignal) => getJson<ModelCard>("model", signal);
