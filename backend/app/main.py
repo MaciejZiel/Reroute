@@ -8,13 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
 from .api_live import router as live_router
-from .database import SessionLocal
+from .database import SessionLocal, wait_for_database
 from .demo_data import seed_demo_network
 from .migrate import migrate
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    wait_for_database()
     migrate()
     with SessionLocal() as session:
         seed_demo_network(session)
