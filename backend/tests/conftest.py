@@ -39,6 +39,11 @@ def db(pg_engine: Engine) -> Iterator[Session]:
             f'"{name}"'
             for name in ("trip_schedules", "pattern_stops", "stop_patterns", "route_stops")
         )
-        session.execute(text(f"TRUNCATE {tables}, routes, stops CASCADE"))
+        session.execute(
+            text(
+                f"TRUNCATE {tables}, routes, stops, vehicle_observations, stop_arrival_events, "
+                "vehicle_latest, collector_state, delay_snapshots CASCADE"
+            )
+        )
         session.commit()
         session.close()

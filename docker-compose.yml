@@ -31,6 +31,32 @@ services:
       db:
         condition: service_healthy
 
+  collector:
+    build: ./backend
+    command: ["python", "-m", "app.collector", "run"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://reroute:local-only-change-me@db:5432/reroute}
+      GTFS_RT_URL: ${GTFS_RT_URL:-https://mkuran.pl/gtfs/warsaw/vehicles.pb}
+      GTFS_ALERTS_URL: ${GTFS_ALERTS_URL:-https://mkuran.pl/gtfs/warsaw/alerts.pb}
+      POLL_INTERVAL_S: ${POLL_INTERVAL_S:-20}
+      OBSERVATION_RETENTION_DAYS: ${OBSERVATION_RETENTION_DAYS:-7}
+      ARRIVAL_RETENTION_DAYS: ${ARRIVAL_RETENTION_DAYS:-90}
+      RAW_ARCHIVE_DIR: ${RAW_ARCHIVE_DIR:-}
+      STORE_UNMATCHED: ${STORE_UNMATCHED:-true}
+      METRICS_PORT: 9100
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9100/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    depends_on:
+      db:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     environment:
