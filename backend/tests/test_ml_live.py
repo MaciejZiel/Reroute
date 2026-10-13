@@ -412,7 +412,7 @@ def test_nothing_is_held_without_a_live_vehicle_or_for_another_stop(model_file: 
     assert b.model_status == "paused"
 
 
-def test_a_row_without_inputs_and_without_a_pause_reason_is_labelled_no_inputs(
+def test_a_row_without_inputs_and_without_a_pause_reason_is_labelled_passed(
     model_file: str,
 ) -> None:
     from app.ml.model import DelayModel, ModelPredictor
@@ -426,7 +426,7 @@ def test_a_row_without_inputs_and_without_a_pause_reason_is_labelled_no_inputs(
     (a,) = predictor.predict([bare], explain=True)
     (b,) = predictor.predict([paused], explain=True)
 
-    assert a.basis == "live_delay" and a.model_status == "no_inputs"
+    assert a.basis == "live_delay" and a.model_status == "passed"
     assert a.pause_reason is None and a.explanation is None
     assert a.lower_delay_s is None and a.upper_delay_s is None
     assert b.model_status == "paused" and b.pause_reason == "vehicle_report"
