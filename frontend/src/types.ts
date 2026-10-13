@@ -17,92 +17,121 @@ export interface FeatureCollection {
   notice: string;
 }
 
-export interface Selection {
-  type: EntityType;
-  id: string;
-  label: string;
-  coordinate: [number, number];
-}
-
-export interface AffectedRoute {
-  id: string;
-  label: string;
-  mode: string;
-  affected_stops: number;
-  affected_trips: number;
-}
-
-export interface JourneyLeg {
-  kind: "ride" | "walk";
-  line: string | null;
-  mode: string | null;
-  from_stop: string;
-  to_stop: string;
-  minutes: number;
-  wait_minutes: number;
-  stops: number;
-}
-
-export interface RouteLabel {
-  id: string;
-  label: string;
-  mode: string;
-}
-
-export interface Detour {
-  lines: RouteLabel[];
-  origin: string;
-  destination: string;
-  baseline_minutes: number;
-  disrupted_minutes: number | null;
-  added_minutes: number | null;
-  legs: JourneyLeg[];
-}
-
-export interface RoutingSummary {
-  affected_trips: number;
-  affected_segments: number;
-  sampled_journeys: number;
-  average_added_minutes: number | null;
-  max_added_minutes: number | null;
-  unreachable_journeys: number;
-  slowdown_factor: number | null;
-  closed_stop_ids: string[];
-}
-
-export interface AlternativeRoute {
-  id: string;
-  label: string;
-  mode: string;
-  shared_stops: number;
-}
-
-export interface AlternativeStop {
+export interface StopSummary {
   id: string;
   name: string;
   latitude: number;
   longitude: number;
-  distance_m: number;
-  routes: string[];
+  platform: string | null;
 }
 
-export interface SimulationResult {
+export interface StopMatch {
   id: string;
-  target_type: string;
-  target_id: string;
-  disruption_type: string;
-  duration_minutes: number;
-  affected_routes: AffectedRoute[];
-  affected_stops: string[];
-  alternative_routes: AlternativeRoute[];
-  alternative_stops: AlternativeStop[];
-  routing: RoutingSummary;
-  detours: Detour[];
-  affected_stop_count: number;
-  impact_score: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  stop_ids: string[];
+  lines: string[];
+}
+
+export interface StopSearchResponse {
+  query: string;
+  results: StopMatch[];
+}
+
+export interface Departure {
+  trip_id: string;
+  stop_id: string;
+  platform: string | null;
+  headsign: string;
+  scheduled_at: string;
+  predicted_at: string | null;
+  delay_seconds: number | null;
+  minutes: number;
+  live: boolean;
+  vehicle_id: string | null;
+  basis: "live_delay" | "scheduled";
+}
+
+export interface LineDepartures {
+  line: string;
+  route_id: string;
+  mode: string;
+  long_name: string;
+  departures: Departure[];
+}
+
+export interface StopDepartures {
+  stop: StopSummary;
+  platforms: StopSummary[];
+  generated_at: string;
+  horizon_minutes: number;
   data_mode: DataMode;
+  live_vehicles: number;
+  lines: LineDepartures[];
   notice: string;
-  created_at: string;
+}
+
+export interface LineStop {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  sequence: number;
+}
+
+export interface AlertInfo {
+  id: string;
+  effect: string;
+  header_pl: string | null;
+  header_en: string | null;
+  url: string | null;
+}
+
+export interface LineDetail {
+  line: string;
+  route_id: string;
+  long_name: string;
+  mode: string;
+  shape: GeoJSON.Geometry | null;
+  stops: LineStop[];
+  alerts: AlertInfo[];
+  data_mode: DataMode;
+}
+
+export interface NextStop {
+  stop_id: string;
+  name: string;
+  sequence: number;
+  scheduled_at: string;
+  predicted_at: string | null;
+  delay_seconds: number | null;
+}
+
+export interface VehicleDetail {
+  vehicle_id: string;
+  label: string | null;
+  line: string;
+  mode: string;
+  trip_id: string | null;
+  headsign: string | null;
+  observed_at: string;
+  age_seconds: number;
+  latitude: number;
+  longitude: number;
+  delay_seconds: number | null;
+  status: "ok" | "layover" | "off_route" | "no_schedule" | "stale";
+  next_stops: NextStop[];
+  model: { name: string; version: string; kind: "baseline" | "model" };
+}
+
+/** What the user has picked: a stop, then optionally one of its lines, then optionally a vehicle. */
+export interface Focus {
+  stopId: string | null;
+  stopName: string | null;
+  lineId: string | null;
+  lineLabel: string | null;
+  vehicleId: string | null;
 }
 
 export interface PunctualityPoint {
