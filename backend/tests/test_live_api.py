@@ -450,3 +450,19 @@ def test_a_running_collector_stops_the_api_from_fetching_the_feed(
     monkeypatch.setattr(live, "GtfsRtClient", no_fetch)
 
     assert client.get("/api/vehicles").status_code == 200
+
+
+def test_network_marks_each_stop_with_the_modes_that_serve_it(client: TestClient) -> None:
+    response = client.get("/api/network")
+    assert response.status_code == 200
+    modes = {
+        feature["id"]: feature["properties"]["mode"]
+        for feature in response.json()["features"]
+        if feature["properties"]["entity_type"] == "stop"
+    }
+    # Tram 9 calls at 100101 and 200101, bus 175 at 100102; both call at 300101.
+    assert modes["100101"] == "tram"
+    assert modes["200101"] == "tram"
+    assert modes["100102"] == "bus"
+    assert modes["300101"] == "both"
+    assert modes["999901"] == "bus"  # no route calls there: falls back to bus

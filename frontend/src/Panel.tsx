@@ -1,4 +1,5 @@
 import { clock, delayClass, delayText, lineOrder } from "./format";
+import type { LineScope } from "./vehicles";
 import type { TranslationKey } from "./i18n";
 import type { Polled } from "./usePolled";
 import type {
@@ -13,7 +14,13 @@ interface PanelProps {
   focus: Focus;
   stop: Polled<StopDepartures>;
   line: Polled<LineDetail>;
+  /** The line's vehicles after the scope was applied (what the map shows). */
   lineVehicles: FeatureCollection | null;
+  allLineVehicles: FeatureCollection | null;
+  lineScope: LineScope;
+  onScope: (scope: LineScope) => void;
+  headingCount: number;
+  stats: { routes: number; stops: number; vehicles: number };
   vehicle: Polled<VehicleDetail>;
   onPickLine: (line: LineDepartures) => void;
   onPickVehicle: (vehicleId: string) => void;
@@ -113,7 +120,7 @@ function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps)
 }
 
 function LineView(props: PanelProps) {
-  const { language, t, focus, stop, line, lineVehicles, onPickVehicle, onBack, onClear } = props;
+  const { language, t, focus, stop, line, lineVehicles, allLineVehicles, lineScope, onScope, headingCount, onPickVehicle, onBack, onClear } = props;
   const detail = line.data;
   const here = stop.data?.lines.find((item) => item.route_id === focus.lineId || item.line === focus.lineLabel);
   const vehicles = (lineVehicles?.features ?? []).map((feature) => ({
@@ -128,7 +135,12 @@ function LineView(props: PanelProps) {
       <Header kicker={t("lineKicker")} title={detail?.long_name ?? ""} onClear={onClear} t={t}
         onBack={focus.stopId ? onBack : undefined} backLabel={`${t("backToStop")}${focus.stopName ? `: ${focus.stopName}` : ""}`}
         chip={<LineChip label={detail?.line ?? focus.lineLabel ?? ""} mode={detail?.mode ?? "bus"}/>}/>
-      <p className="panel-note only-line">{t("onlyThisLine")}</p>
+      {focus.stopId && (
+        <div className="scope-switch" role="group" aria-label={t("vehicleScope")}>
+          <button type="button" aria-pressed={lineScope === "all"} onClick={() => onScope("all")}>{t("scopeAll")}<small>{allLineVehicles?.features.length ?? 0}</small></button>
+          <button type="button" aria-pressed={lineScope === "stop"} onClick={() => onScope("stop")}>{t("scopeStop")}<small>{headingCount}</small></button>
+        </div>
+      )}
       <ErrorNote error={line.error} fallback={t("lineError")} t={t}/>
       {detail && detail.alerts.length > 0 && (
         <section className="alert-box" aria-label={t("alerts")}>
@@ -140,10 +152,10 @@ function LineView(props: PanelProps) {
       )}
       {here && here.departures.length > 0 && <>
         <div className="section-line"><span className="section-kicker">{t("lineDeparturesHere")} {focus.stopName}</span></div>
-        <ul className="departure-list">{here.departures.map((departure) => <DepartureRow key={departure.trip_id} departure={departure} language={language} t={t}/>)}</ul>
+        <ul className="departure-list">{here.departures.slice(0, 4).map((departure) => <DepartureRow key={departure.trip_id} departure={departure} language={language} t={t}/>)}</ul>
       </>}
       <div className="section-line"><span className="section-kicker">{t("lineVehicles")} · {vehicles.length}</span>{mean !== null && <span className="mean-delay">{t("meanDelayNow")}: <DelayBadge seconds={mean} t={t}/></span>}</div>
-      {vehicles.length === 0 && lineVehicles && <p className="panel-note">{t("noLineVehicles")}</p>}
+      {vehicles.length === 0 && lineVehicles && <p className="panel-note">{lineScope === "stop" ? `${t("noneHeadingHere")} ${focus.stopName ?? ""}.` : t("noLineVehicles")}</p>}
       <ul className="vehicle-list">{vehicles.map((vehicle) => (
         <li key={vehicle.id}><button className="vehicle-row" onClick={() => onPickVehicle(String(vehicle.id))}><span className="vehicle-id">{vehicle.label}</span><DelayBadge seconds={vehicle.delay} t={t}/><span className="chevron" aria-hidden="true">›</span></button></li>
       ))}</ul>
@@ -190,12 +202,17 @@ export default function Panel(props: PanelProps) {
   if (focus.vehicleId) return <VehicleView {...props}/>;
   if (focus.lineId) return <LineView {...props}/>;
   if (focus.stopId) return <StopView {...props}/>;
+  const { stats } = props;
   return (
     <div className="idle-panel">
       <span className="section-kicker">{t("idleKicker")}</span>
       <h2>{t("idleTitle")}</h2>
       <p>{t("idleBody")}</p>
-      <ol className="idle-steps"><li><b>1</b><span>{t("stepStop")}</span></li><li><b>2</b><span>{t("stepLine")}</span></li><li><b>3</b><span>{t("stepVehicle")}</span></li></ol>
+      <dl className="net-stats">
+        <div><dt>{t("activeLines")}</dt><dd>{stats.routes || "—"}</dd></div>
+        <div><dt>{t("stops")}</dt><dd>{stats.stops || "—"}</dd></div>
+        <div><dt>{t("vehicles")}</dt><dd>{stats.vehicles || "—"}</dd></div>
+      </dl>
     </div>
   );
 }
