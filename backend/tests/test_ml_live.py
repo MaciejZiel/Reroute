@@ -421,7 +421,9 @@ def test_a_row_without_inputs_and_without_a_pause_reason_is_labelled_no_inputs(
 
     predictor = ModelPredictor(DelayModel.load(model_file))
     bare = _row_for(model_file, model_inputs=None, current_delay_s=30, model_pause=None)
-    paused = _row_for(model_file, model_inputs=None, current_delay_s=30, model_pause="vehicle_report")
+    paused = _row_for(
+        model_file, model_inputs=None, current_delay_s=30, model_pause="vehicle_report"
+    )
 
     (a,) = predictor.predict([bare], explain=True)
     (b,) = predictor.predict([paused], explain=True)
