@@ -78,8 +78,21 @@ def _summary(stop: StopInfo) -> StopSummary:
     )
 
 
+AT_MIN = datetime(2000, 1, 1, tzinfo=UTC)
+AT_MAX = datetime(2100, 1, 1, tzinfo=UTC)
+
+
 def _now(at: datetime | None) -> datetime:
-    return at.astimezone(UTC) if at else datetime.now(UTC)
+    """The request clock: the real time, or the testing override when it is a sane date."""
+    if at is None:
+        return datetime.now(UTC)
+    try:
+        moment = at.astimezone(UTC)
+    except (OverflowError, ValueError):
+        moment = None
+    if moment is None or not AT_MIN <= moment <= AT_MAX:
+        raise HTTPException(status_code=422, detail="at must be between 2000 and 2100")
+    return moment
 
 
 @router.get("/stops", response_model=StopSearchResponse, tags=["stops"])
@@ -139,7 +152,9 @@ def stop_departures(
     lines = lines_at(db, [platform.id for platform in platforms], is_demo)
     names = {route_id: short for route_id, short, _, _ in lines}
     horizon = timedelta(minutes=horizon_minutes)
-    grouped = by_route(upcoming(db, platforms, now, horizon, names)) if not is_demo else {}
+    grouped = (
+        {} if is_demo else by_route(upcoming(db, platforms, now, horizon, names, per_line=per_line))
+    )
     platform_of = {platform.id: platform.platform for platform in platforms}
     result = []
     for route_id, short_name, long_name, mode in lines:
@@ -431,7 +446,7 @@ def predictions(
         _require_timetable(db, is_demo)
         names = {route_id: short for route_id, short, _, _ in lines_at(db, [stop.id], is_demo)}
         modes = {route_id: mode for route_id, _, _, mode in lines_at(db, [stop.id], is_demo)}
-        candidates = upcoming(db, [stop], now, line_names=names)
+        candidates = upcoming(db, [stop], now, line_names=names, total=limit)
         candidates.sort(key=lambda item: item.expected_at)
         if predictor.kind == "model":
             explain_first(db, candidates[:limit], names, now, lang)

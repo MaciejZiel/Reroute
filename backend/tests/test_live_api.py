@@ -543,3 +543,39 @@ def test_punctuality_answer_is_cached_for_a_minute(
     api._punctuality_cache.clear()
     fresh = punctuality_client.get("/api/punctuality?minutes=60").json()
     assert {line["line"] for line in fresh["lines"]} == {"9", "175"}
+
+
+@pytest.mark.parametrize(
+    "at",
+    [
+        "9999-12-31T23:59:59Z",
+        "0001-01-01T00:00:00Z",
+        "1999-12-31T23:59:59Z",
+        "2100-01-01T00:00:01Z",
+    ],
+)
+def test_an_absurd_at_is_a_422_not_a_500(client: TestClient, at: str) -> None:
+    response = client.get("/api/stops/100101/departures", params={"at": at})
+    assert response.status_code == 422
+
+
+def test_only_the_departures_that_can_be_shown_are_predicted(
+    client: TestClient, network: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[int] = []
+
+    class Counting:
+        name, version, kind = "counting", "1", "baseline"
+
+        def predict(self, rows, explain=False, lang="en"):
+            seen.append(len(rows))
+            return [predict.Prediction(0) for _ in rows]
+
+    monkeypatch.setattr(predict, "_predictor", Counting())
+    body = _departures(client, "100101", _local(DAY, 12, 0), per_line=1, horizon_minutes=360)
+
+    tram = next(line for line in body["lines"] if line["line"] == "9")
+    assert [d["scheduled_at"][11:16] for d in tram["departures"]] == ["10:00"]
+    # the station has 7 trips in the next six hours; with per_line=1 the line of 6 trips is cut
+    # to 1 + the slack, and the single trip of the other line stays: 4 + 1 rows are predicted
+    assert sum(seen) == 5

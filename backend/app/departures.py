@@ -154,8 +154,17 @@ def upcoming(
     now: datetime,
     horizon: timedelta = DEFAULT_HORIZON,
     line_names: dict[str, str] | None = None,
+    per_line: int | None = None,
+    total: int | None = None,
 ) -> list[Candidate]:
-    """Departures within the horizon (expected time, so a late bus stays until it passes)."""
+    """Departures within the horizon (expected time, so a late bus stays until it passes).
+
+    The prediction is the expensive step (history queries, model evaluation), so with ``per_line``
+    and/or ``total`` only the candidates that can still make the cut are predicted: they are
+    ranked by the delay their vehicle reports now, and a few more than asked for are kept
+    (``TRIM_SLACK``) because the prediction can move a departure by a minute or two. The caller
+    must not ask for more entries per line (or in total) than it passes here.
+    """
     stop_ids = [stop.id for stop in stops]
     merged = {(c.trip_id, c.position): c for c in scheduled_candidates(db, stop_ids, now, horizon)}
     for candidate in live_candidates(db, stop_ids, now):
@@ -170,10 +179,51 @@ def upcoming(
                 continue  # already passed this stop
             candidate.vehicle = vehicle
         result.append(candidate)
+    result = _trim(result, now, horizon, per_line, total)
     _predict(db, result, line_names or {}, now)
     return [
         candidate for candidate in result if now - GRACE <= candidate.expected_at <= now + horizon
     ]
+
+
+TRIM_SLACK = 3
+TRIM_MARGIN = timedelta(minutes=10)
+
+
+def _reported_expected_at(candidate: Candidate) -> datetime:
+    vehicle = candidate.vehicle
+    if vehicle is not None and vehicle.has_delay:
+        return candidate.scheduled_at + timedelta(seconds=vehicle.delay_s)
+    return candidate.scheduled_at
+
+
+def _trim(
+    candidates: list[Candidate],
+    now: datetime,
+    horizon: timedelta,
+    per_line: int | None,
+    total: int | None,
+) -> list[Candidate]:
+    """Keep the candidates that can still appear in the answer; drop the rest before predicting."""
+    if per_line is None and total is None:
+        return candidates
+    window = [
+        c
+        for c in candidates
+        if now - GRACE - TRIM_MARGIN <= _reported_expected_at(c) <= now + horizon + TRIM_MARGIN
+    ]
+    window.sort(key=_reported_expected_at)
+    if per_line is not None:
+        taken: dict[str, int] = defaultdict(int)
+        kept = []
+        for candidate in window:
+            if taken[candidate.route_id] < per_line + TRIM_SLACK:
+                taken[candidate.route_id] += 1
+                kept.append(candidate)
+        window = kept
+    if total is not None:
+        window = window[: total + TRIM_SLACK]
+    return window
 
 
 def _age(vehicle: LiveVehicle | None, now: datetime) -> float | None:
