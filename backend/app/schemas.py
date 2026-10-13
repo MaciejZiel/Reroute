@@ -216,3 +216,52 @@ class PredictionsResponse(BaseModel):
     generated_at: datetime
     model: ModelInfo
     predictions: list[PredictionItem]
+
+
+class CardInterval(BaseModel):
+    value: float
+    low: float
+    high: float
+
+
+class CardScore(BaseModel):
+    name: str
+    mae_s: CardInterval
+    rmse_s: CardInterval
+    bias_s: float
+    mae_by_horizon_s: dict[str, float]
+
+
+class CardCoverage(BaseModel):
+    label: str
+    predictions: int
+    coverage: CardInterval
+    held_out: bool
+    window: str
+
+
+class ModelCardResponse(BaseModel):
+    """What the served model is and how it was checked, read from the model file's card. Nothing
+    here is computed per request and nothing is retrained: it is the record of the one training
+    run (and of the checks run on its stored file)."""
+
+    status: Literal["model", "baseline"]
+    version: str | None = None
+    kind: str | None = None
+    promoted: bool | None = None
+    trained_at: str | None = None
+    training_window: dict[str, str] | None = None
+    test_window: dict[str, str] | None = None
+    data: dict | None = None
+    sample_counts: dict[str, int] | None = None
+    best_baseline: str | None = None
+    gain_vs_best_baseline: CardInterval | None = None
+    gain_vs_ridge: CardInterval | None = None
+    scores: list[CardScore] = Field(default_factory=list)
+    interval_nominal: float | None = None
+    interval_mean_width_s: float | None = None
+    calibration_by_horizon: list[CardCoverage] = Field(default_factory=list)
+    calibration_by_hour: list[CardCoverage] = Field(default_factory=list)
+    serving_range: dict | None = None
+    features: list[str] = Field(default_factory=list)
+    limits: list[str] = Field(default_factory=list)
