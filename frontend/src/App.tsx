@@ -145,6 +145,10 @@ export default function App() {
     if (Math.abs(delta) < 10) setSheet(SHEETS[(index + 1) % SHEETS.length]);
     else setSheet(SHEETS[Math.min(SHEETS.length - 1, Math.max(0, index + (delta > 0 ? 1 : -1)))]);
   };
+  // Enter and Space fire a click with no pointer behind it (detail 0); pointer taps are handled above.
+  const onHandleKey = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (event.detail === 0) setSheet((current) => SHEETS[(SHEETS.indexOf(current) + 1) % SHEETS.length]);
+  };
 
   return (
     <div className="app">
@@ -179,9 +183,9 @@ export default function App() {
 
         <aside className={`panel sheet-${sheet}`} aria-label={t("panelLabel")}>
           <button type="button" className="sheet-handle" onPointerDown={onHandleDown} onPointerUp={onHandleUp} onPointerCancel={() => { drag.current = null; }}
-            aria-label={t("sheetToggle")}><i/></button>
+            onClick={onHandleKey} aria-label={t("sheetToggle")} aria-expanded={sheet !== "peek"} aria-controls="panel-scroll"><i/></button>
           <Stepper focus={focus} t={t} onStep={goStep} vehicleLabel={vehicle.data?.label} />
-          <div className="panel-scroll" ref={scroller} aria-live="polite">
+          <div className="panel-scroll" id="panel-scroll" ref={scroller} aria-live="polite">
             {apiError && <p className="form-error" role="status">{t("dataFallback")}</p>}
             <Panel language={language} t={t} focus={focus} stop={stop} line={line} lineVehicles={lineShown} allLineVehicles={lineVehicles.data}
               lineScope={scope} onScope={setLineScope} headingCount={heading.size}
