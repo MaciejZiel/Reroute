@@ -15,7 +15,7 @@ dependencies = [
   "shapely>=2.0,<3.0",
   "psycopg[binary]>=3.2,<4.0",
   "httpx>=0.27,<1.0",
-  "gtfs-realtime-bindings>=3.0,<4.0",
+  "gtfs-rt-kit[http]>=0.1.0,<0.2",
 ]
 
 [project.optional-dependencies]

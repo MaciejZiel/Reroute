@@ -64,32 +64,29 @@ Expected ~1-3k candidate trips for a busy interchange, no new giant table.
 ### 3.2 `vehicle_observations` (new, partitioned by day)
 
 One row per *new* feed position of a vehicle (a row is skipped when the vehicle's own timestamp has
-not changed since the previous poll, so 15 s polling does not multiply rows).
+not changed since the previous poll, so 20 s polling does not multiply rows).
 
 | Column | Notes |
 | --- | --- |
 | `observed_at` | the vehicle's own timestamp (partition key) |
-| `feed_at` | feed header timestamp |
-| `vehicle_id` | e.g. `V/140/2` (+ `label`, the fleet number) |
-| `trip_id`, `service_date`, `route_id`, `line`, `mode` | `trip_id` empty/NULL for unmatched vehicles |
-| `lat`, `lon`, `bearing`, `speed` | speed from the feed if present |
-| `next_stop_seq`, `next_stop_id` | the stop the vehicle is heading to, from the projection |
-| `scheduled_s` | schedule-interpolated seconds at the projected point |
-| `delay_s` | `observed_at` minus scheduled instant, NULL when not computable |
-| `match_status` | smallint enum: ok, no_trip, trip_unknown, off_route, layover, implausible |
-| `source` | `live` or `backfill` |
+| `vehicle_id`, `trip_id`, `line` | `trip_id` NULL for vehicles without a trip |
+| `lat`, `lon`, `bearing` | `real` coordinates (~0.5 m) |
+| `next_stop_seq` | 1-based position in the trip of the stop the vehicle is heading to |
+| `delay_s` | `observed_at` minus the scheduled instant at the projected point; NULL when not computable |
+| `match_status` | smallint enum: 0 ok, 1 no trip, 2 trip unknown, 3 off route, 4 layover, 5 implausible |
+| `source` | 0 live, 1 backfill |
+
+Route, mode, service date, next stop id and scheduled time follow from `trip_id`,
+`next_stop_seq` and the timetable, so they are not stored (the first version stored them and
+needed ~255 B/row; the measured slim row is ~146 B/row including the primary key).
 
 - Primary key `(observed_at, vehicle_id)` (partition key first); `ON CONFLICT DO NOTHING` makes
-  live polling and backfill idempotent and safe to overlap.
-- Secondary indexes: `(trip_id, observed_at)` (features for one trip), `(route_id, observed_at)`;
-  BRIN on `observed_at` inside each partition.
-- Daily range partitions created ahead of time by the collector; **retention 7 days by default**
-  (`OBSERVATION_RETENTION_DAYS`), enforced by `DROP TABLE` of whole partitions (no vacuum churn).
-- Size estimate (to be measured): ~1,900 vehicles x ~3 new positions/min = ~8M rows/day before
-  filtering to Warsaw, ~85 B/row + indexes ~ 1.2 GB/day, so 7 days ~ 8 GB. This is the reason for
-  short retention here and long retention on the derived table below. Unmatched vehicles
-  (`no_trip`) are stored without index entries on trip/route columns being useful, and can be
-  dropped via `STORE_UNMATCHED=false`.
+  live polling and backfill idempotent and safe to overlap. There is deliberately no secondary
+  index: a `(trip_id, observed_at)` index cost as much as the rows themselves.
+- Daily range partitions created on demand by the collector; **retention 7 days by default**
+  (`OBSERVATION_RETENTION_DAYS`), enforced by `DROP TABLE` of whole partitions.
+- Measured on the real feed: ~3,700 new observations a minute, ~5.3M rows and ~0.8 GB a day,
+  so 7 days is ~5.5 GB.
 
 ### 3.3 `stop_arrival_events` (new, derived, monthly partitions)
 
@@ -97,20 +94,21 @@ The ML training table: what actually happened at each stop of each trip.
 
 | Column | Notes |
 | --- | --- |
-| `service_date`, `trip_id`, `stop_sequence` | primary key (partition key `service_date`) |
-| `stop_id`, `route_id`, `line`, `mode`, `direction_id` | denormalised for queries |
+| `service_date`, `trip_id`, `stop_seq` | primary key (partition key `service_date`) |
+| `stop_id`, `line` | denormalised for queries |
 | `scheduled_at` | scheduled instant (DST-safe, see section 2) |
 | `actual_at` | interpolated time the vehicle passed the stop |
 | `delay_s` | `actual_at - scheduled_at` |
-| `quality` | `interpolated` (crossing between two observations) or `snapped` (observation within 40 m); `gap_s` = time between the two observations used |
-| `vehicle_id`, `n_obs` | provenance |
+| `gap_s` | seconds between the two observations the crossing was interpolated from (quality: small is good) |
 
-Derivation: the collector keeps the last observation of each vehicle (reloaded from the DB at
-restart). When a new observation advances the projected progress along the trip past one or
-more stops, each crossed stop gets `actual_at` linearly interpolated between the two
-observations; events with `gap_s` above 180 s are marked low quality, not dropped.
-Re-derivable from observations or raw snapshots, so the algorithm can improve later.
-Monthly partitions, **retention 90 days** (~1.2M events/day, ~60 B/row ~ 70 MB/day).
+Derivation: the collector keeps the last observation of each vehicle (rebuilt from
+`vehicle_latest` at restart). When a new observation advances the projected progress along the
+trip past one or more stops, each crossed stop gets `actual_at` linearly interpolated (in
+progress, not in distance) between the two observations. Gaps above 600 s produce no events.
+The departure from the first stop is not an event (it is hidden in the layover).
+Re-derivable from raw snapshots, so the algorithm can improve later. Monthly partitions,
+**retention 90 days** by default. Measured ~1.3M events a day at ~170 B each is ~220 MB/day, so
+90 days is ~20 GB: on a 40 GB disk set `ARRIVAL_RETENTION_DAYS=60`.
 
 ### 3.4 Alerts (new)
 
@@ -128,9 +126,8 @@ line".
   feed itself, so a page load never waits on the upstream feed and N API workers do not poll N
   times. If `vehicle_latest` is older than 90 s (collector not running, e.g. plain local dev)
   the API falls back to the current in-process fetch, so `docker compose up` of just db+api still works.
-- `line_delay_minute(minute, line, mode, vehicles, mean_s, median_s, early, on_time, late)`
-  replaces `delay_snapshots`: the collector writes it once a minute from the same pass, 7-day
-  retention. The punctuality view keeps working unchanged (secondary view).
+- `delay_snapshots` stays as the per-line, per-minute rollup behind the punctuality view; the
+  collector writes it once a minute from `vehicle_latest` (7-day retention) instead of the API.
 
 ## 4. Collector service
 
@@ -154,7 +151,9 @@ clock dependency**; the live loop and the backfill both call it, so they cannot 
 
 Backfill: `python -m app.collector backfill --raw-dir ~/reroute-data/raw --from 2026-10-13 [--to ...]`
 reads `v_*.pb.gz` in time order, decodes, runs the same `derive` with the feed header
-timestamp as the clock and writes with `source='backfill'`. Idempotent (primary key conflicts are
+timestamp as the clock and writes with `source=1`. Incremental: the last processed file is kept in
+`collector_state` per archive directory, so a repeated run only reads new files (its vehicle state is primed from
+the last processed file). Idempotent (primary key conflicts are
 ignored); the static timetable must contain the trips of those dates (the report lists
 how many trip ids could not be found).
 

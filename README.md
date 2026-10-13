@@ -71,6 +71,18 @@ docker compose exec backend python -m app.collect_delays   # one snapshot per mi
 
 Repeat imports reuse the cached archive; pass `--force-download` to fetch the latest version or `--file` to import a local archive. The import replaces only the real network and keeps the demo network as a fallback.
 
+## Collector
+
+`docker compose up` also starts the `collector`: a separate process that polls the GTFS-Realtime vehicle and alert feeds every 20 s and records every vehicle observation, the stop arrivals derived from them and service alerts (see [docs/design.md](docs/design.md)). It serves `/healthz` and Prometheus `/metrics` on port 9100 inside the container. Settings (environment): `POLL_INTERVAL_S`, `OBSERVATION_RETENTION_DAYS` (7), `ARRIVAL_RETENTION_DAYS` (90; about 220 MB a day, use 60 on a 40 GB disk), `RAW_ARCHIVE_DIR` (also keep gzipped raw snapshots), `STORE_UNMATCHED`.
+
+Replay archived snapshots (`<dir>/<YYYY-MM-DD>/v_<HHMMSS>.pb.gz`, UTC); repeated runs continue after the last processed file:
+
+```bash
+docker compose run --rm -v ~/reroute-data/raw:/raw collector python -m app.collector backfill --raw-dir /raw
+```
+
+Schema changes are plain SQL files in `backend/app/migrations/`, applied at start-up and by `python -m app.migrate`. Databases imported before this version need `python -m app.import_gtfs` again to fill the new trip date and stop lookup columns.
+
 ## Tests
 
 ```bash
