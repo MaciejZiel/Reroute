@@ -1,6 +1,6 @@
 # Reroute
 
-**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?** Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; click a line to see only its route and moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival so a delay-prediction model can be trained later.
+**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?** Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival so a delay-prediction model can be trained later.
 
 [![CI](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -8,27 +8,38 @@
 ![FastAPI + PostGIS](https://img.shields.io/badge/FastAPI-PostGIS-009688.svg)
 ![React + MapLibre](https://img.shields.io/badge/React-MapLibre-3178c6.svg)
 
-![Plac Zbawiciela: lines serving the stop with next departures and live delays](docs/screenshots/stop-departures.png)
+![The calm default view: a muted dark basemap, quiet route lines and no vehicles until you ask for them](docs/screenshots/overview.png)
 
 ## What it does
 
-- **Stop panel.** Click a stop on the map (or search by name, diacritics-insensitive) and see all lines at the station, each with its next departures from the ZTM GTFS timetable. Departures with a matched live vehicle show the delay and the expected time; late vehicles stay listed until they pass, vehicles that already passed disappear.
-- **Line focus.** Click a line: the map highlights its route and stops, hides all other vehicles and refreshes that line's vehicles every 15 seconds. Service alerts for the line are shown.
+- **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On a phone the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
+- **Quiet by default.** No vehicles are drawn until you pick a line. A single switch, "Show all vehicles" (off by default), draws the whole fleet as small unlabelled dots for those who want the city-wide picture; names appear only when zoomed in.
+- **Stop panel.** Search by name (diacritics-insensitive) or zoom in and click a stop; see all lines at the station with their next timetable departures. Departures with a matched live vehicle show the delay and the expected time; late vehicles stay listed until they pass, vehicles that already passed disappear.
+- **Mode-aware stop icons.** Bus stops are mint, tram stops coral and stops served by both are split; a small glyph says which. Stops are hidden at city zoom (the route lines carry the overview), thin out by collision as you zoom in, get names from zoom 16 and the selected station is highlighted in gold with a single label.
+- **Line focus.** Pick a line: the map highlights its route and stops and shows only that line's vehicles, with the line number on each, a heading wedge and the delay colour as the outline. Vehicles glide between the 15-second updates. When you came via a stop, a switch limits the view to "Heading to my stop" (the live vehicles that still have a departure at that stop, so direction is handled by the timetable) or "All of this line". Service alerts are shown.
 - **Vehicle detail.** Click a vehicle: delay against the timetable, status (waiting at the first stop, off route, stale position) and the next stops with scheduled and expected times.
-- **Delay colours everywhere.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
+- **Delay colours.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
 - **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes.
 - **Bilingual, responsive UI** (Polish and English; on a phone the panel sits under the map).
 - **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists).
 
-| Line focus | Vehicle detail |
+| All vehicles (switch on) | Stop selected |
 | --- | --- |
-| ![Only line 4 is shown: route, stops and live vehicles](docs/screenshots/line-live.png) | ![Vehicle 3622 is 5 minutes late, with next stops and expected times](docs/screenshots/vehicle-detail.png) |
+| ![The whole fleet as small dots, no labels at city zoom](docs/screenshots/all-vehicles.png) | ![Centrum station highlighted with mode-aware stop icons and the lines serving it](docs/screenshots/stop.png) |
 
-| Punctuality (secondary view) | Mobile |
+| Line focus | Only vehicles heading to my stop |
 | --- | --- |
-| ![Share of early, on-time and late vehicles per line and a delay trend](docs/screenshots/punctuality.png) | ![Stop panel under the map on a phone](docs/screenshots/mobile.png) |
+| ![Tram 18: route, stops and all of its live vehicles](docs/screenshots/line.png) | ![The same line limited to the vehicles that still have to reach the selected stop](docs/screenshots/line-heading.png) |
 
-Screenshots are from the live Warsaw data on 13 October 2026.
+| Vehicle detail | Punctuality (secondary view) |
+| --- | --- |
+| ![A tram with its delay against the timetable and next stops](docs/screenshots/vehicle.png) | ![Share of early, on-time and late vehicles per line and a delay trend](docs/screenshots/punctuality.png) |
+
+| Phone: stop | Phone: line |
+| --- | --- |
+| ![Bottom sheet over the map with the lines at the stop](docs/screenshots/mobile-stop.png) | ![Line focus with the bottom sheet at half height](docs/screenshots/mobile-line.png) |
+
+Screenshots are from the live Warsaw data on 13 October 2026, taken with `playwright-cli` against a local run.
 
 ## Architecture
 
@@ -48,7 +59,7 @@ See [docs/design.md](docs/design.md) for the data model, retention, the collecto
 
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2, GeoAlchemy2, Shapely, [gtfs-rt-kit](https://github.com/MaciejZiel/gtfs-rt-kit)
 - **Database:** PostgreSQL 16 with PostGIS 3.5 (daily and monthly partitions for observations and arrivals)
-- **Frontend:** React 19, TypeScript, Vite, MapLibre GL, OpenStreetMap tiles
+- **Frontend:** React 19, TypeScript, Vite, MapLibre GL, OpenFreeMap vector tiles (OpenStreetMap data) with a custom dark style; oxlint and Vitest
 - **Tooling:** pytest, ruff, Docker Compose, GitHub Actions
 
 ## Quick start
@@ -104,6 +115,18 @@ uv run pytest -q           # database tests are skipped unless TEST_DATABASE_URL
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/reroute_test uv run pytest -q   # all 58
 uv run ruff check . && uv run ruff format --check .
 ```
+
+Frontend:
+
+```bash
+cd frontend
+npm ci
+npm run lint        # oxlint
+npm test            # vitest
+npm run build       # type check + production build
+```
+
+To run the dev server against a backend without CORS set-up: `API_PROXY_TARGET=http://localhost:8000 VITE_API_URL= npm run dev`.
 
 The `TEST_DATABASE_URL` database must be named `*_test` and have PostGIS available: it is wiped. Without it the pure tests still run: service-day and DST arithmetic, vehicle projection, delays and arrival events (after-midnight trips, the 25 October DST night, loop lines, gaps), a trimmed recording of the real Warsaw feed against its timetables (`backend/tests/fixtures/`), GTFS parsing, features and the predictor seam. The database tests cover the import and migrations, partitions, idempotent writes, state restore after a restart, alerts, incremental backfill, and the API (search, departures with live/late/passed/stale vehicles, 24:xx trips and DST, 503/404, predictions). CI runs them against a PostGIS service plus the frontend type check and build.
 
@@ -174,14 +197,14 @@ Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, serv
 - Delay estimates use straight lines between stops rather than the route shape, and dwell times are not modelled. Arrival times are linear interpolations between observations (typically 30 s apart).
 - The departure from the first stop is not recorded as an arrival event (the layover hides it).
 - No holiday calendar feature yet; a service-date lookup from `calendar_dates.txt` would add it.
-- The map shows the whole fleet at once, which is dense at city zoom; clustering vehicles is a possible next step.
-- Tests cover the pure derivation, storage, backfill and API against PostGIS; there are no frontend tests yet.
+- The whole-fleet view is a deliberate opt-in: it is about 1,800 dots at city scale. "Heading to my stop" relies on the stop's departure list (next 2 hours, 10 per line), so a vehicle further away than that is not counted.
+- Tests cover the pure derivation, storage, backfill and API against PostGIS; the frontend has unit tests for the vehicle filtering and the palette contrast.
 
 ## Data and attribution
 
 - Warsaw schedules, routes and stops are provided by ZTM Warsaw in GTFS, distributed by Mikołaj Kuranowski: <https://mkuran.pl/gtfs/>. The feed's `attributions.txt` is retained and exposed by the API.
 - Live positions are published by Miasto Stołeczne Warszawa and distributed as GTFS-Realtime by Mikołaj Kuranowski: <https://mkuran.pl/gtfs/>. The app displays the feed timestamp and city source link; no API key is required. The test fixtures contain a short trimmed recording of this feed and the matching ZTM timetables, with the same attribution.
-- Base map © OpenStreetMap contributors. Map tiles are loaded from `tile.openstreetmap.org`; attribution and caching requirements apply: <https://operations.osmfoundation.org/policies/tiles/>.
+- Base map: vector tiles from [OpenFreeMap](https://openfreemap.org) (free public instance, no API key, no request limits, commercial use allowed; attribution required and shown on the map), © [OpenMapTiles](https://www.openmaptiles.org/), data © OpenStreetMap contributors (ODbL). The dark style is drawn in `frontend/src/basemap.ts`. If you self-host the tiles, point `url` and `glyphs` there at your own instance.
 
 Source code, comments and technical documentation are in English.
 
