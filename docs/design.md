@@ -246,6 +246,7 @@ the model arrives. A `prediction_log(predicted_at, trip_id, stop_id, model_versi
 | `GET /api/vehicles` | all live vehicles (map), from `vehicle_latest` |
 | `GET /api/vehicles/{id}` | one vehicle: delay, next stops with scheduled/predicted times |
 | `GET /api/predictions` | contract above |
+| `GET /api/model` | the served model's card: version, windows, test metrics, interval calibration (static, from the model file) |
 | `GET /api/punctuality` | kept, secondary |
 | `GET /api/network`, `/api/health` | kept |
 

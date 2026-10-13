@@ -26,6 +26,23 @@ export function vehicleDetail(nextStop: Record<string, unknown>) {
   };
 }
 
+const iv = (value: number, low: number, high: number) => ({ value, low, high });
+const score = (name: string, mae: number) => ({ name, mae_s: iv(mae, mae - 1, mae + 1), rmse_s: iv(mae * 1.4, mae * 1.3, mae * 1.5), bias_s: 0, mae_by_horizon_s: {} });
+const coverage = (label: string, predictions: number, value: number, held_out = true) => ({ label, predictions, coverage: iv(value, value - 0.01, value + 0.01), held_out, window: held_out ? "held out" : "calibration window" });
+
+export const MODEL_CARD = {
+  status: "model", version: "20261013-f2a7a97f", trained_at: "2026-10-13T20:11:25Z", promoted: true,
+  training_window: { from: "2026-10-13T14:26:46Z", to: "2026-10-13T19:14:11Z" },
+  test_window: { from: "2026-10-13T19:14:11Z", to: "2026-10-13T20:08:56Z" },
+  data: { arrivals: 240998, trips: 10348, lines: 265, stops: 6422, first_arrival: "2026-10-13T14:25:09Z", last_arrival: "2026-10-13T20:08:56Z", span_hours: 5.73, service_dates: ["2026-10-13"] },
+  best_baseline: "persistence (BaselinePredictor)", gain_vs_best_baseline: iv(0.087, 0.073, 0.101), gain_vs_ridge: iv(0.117, 0.106, 0.129),
+  scores: [score("persistence (BaselinePredictor)", 44.5), score("ridge regression (same features)", 46), score("gradient boosted trees (median)", 40.6)],
+  interval_nominal: 0.8,
+  calibration_by_horizon: [coverage("under 2 min", 11859, 0.788), coverage("2 to 5 min", 62156, 0.792)],
+  calibration_by_hour: [coverage("21:00", 151443, 0.799), coverage("22:00", 13282, 0.798), coverage("20:00", 3000, 0.81, false)],
+  serving_range: { max_stops_ahead: 12 },
+};
+
 /** Mock the whole API: a stop search with several hits, one line with one vehicle. */
 export async function mockApi(page: Page, vehicle: (url: URL) => unknown) {
   await page.route("**/api/**", async (route) => {
@@ -33,6 +50,7 @@ export async function mockApi(page: Page, vehicle: (url: URL) => unknown) {
     const path = url.pathname.replace(/^\/api\//, "");
     let body: unknown = {};
     if (path === "network" || path === "vehicles") body = empty;
+    else if (path === "model") body = MODEL_CARD;
     else if (path === "stops") {
       body = { query: url.searchParams.get("q"), results: [1, 2, 3, 4].map((n) => ({ ...STOP, id: `10010${n}`, name: `Rondo ${n}` })) };
     } else if (path.startsWith("stops/")) body = departures;

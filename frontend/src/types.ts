@@ -171,3 +171,40 @@ export interface PunctualityResult {
   lines: LinePunctuality[];
   notice: string;
 }
+
+export interface CardInterval { value: number; low: number; high: number }
+
+export interface CardScore {
+  name: string;
+  mae_s: CardInterval;
+  rmse_s: CardInterval;
+  bias_s: number;
+  mae_by_horizon_s: Record<string, number>;
+}
+
+export interface CardCoverage {
+  label: string;
+  predictions: number;
+  coverage: CardInterval;
+  held_out: boolean;
+  window: string;
+}
+
+/** GET /api/model: the record of the one training run, static. */
+export interface ModelCard {
+  status: "model" | "baseline";
+  version: string | null;
+  trained_at: string | null;
+  promoted: boolean | null;
+  training_window: { from: string; to: string } | null;
+  test_window: { from: string; to: string } | null;
+  data: { arrivals?: number; trips?: number; lines?: number; stops?: number; first_arrival?: string; last_arrival?: string; span_hours?: number; service_dates?: string[] } | null;
+  best_baseline: string | null;
+  gain_vs_best_baseline: CardInterval | null;
+  gain_vs_ridge: CardInterval | null;
+  scores: CardScore[];
+  interval_nominal: number | null;
+  calibration_by_horizon: CardCoverage[];
+  calibration_by_hour: CardCoverage[];
+  serving_range: { max_stops_ahead?: number } | null;
+}

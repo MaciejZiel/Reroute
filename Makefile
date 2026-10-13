@@ -5,7 +5,7 @@
 
 DATA ?= ml-data
 
-.PHONY: ml-pull ml-train ml-test ml-frozen ml-fixtures
+.PHONY: ml-pull ml-train ml-test ml-frozen ml-fixtures ml-credibility
 
 ml-pull:
 	mkdir -p $(DATA)
@@ -27,3 +27,9 @@ ml-frozen:
 # Regenerate the committed golden fixtures of the evaluator tests (needs the training libraries).
 ml-fixtures:
 	cd backend && python scripts/make_ml_fixtures.py
+
+# Add the ridge comparison and the interval calibration to the stored model's card, without
+# retraining (run make ml-pull first; KNOWN_UNTIL is the UTC time the training data was pulled).
+ml-credibility:
+	cd backend && python -m ml credibility --events ../$(DATA)/arrival_events.csv \
+		--observations ../$(DATA)/observations.csv $(if $(KNOWN_UNTIL),--known-until $(KNOWN_UNTIL))

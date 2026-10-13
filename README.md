@@ -128,7 +128,7 @@ Plan for 2 vCPU, 4 GB RAM and 40 GB of disk (arrival retention defaults to 60 da
 cd backend
 uv sync --extra dev        # or: pip install -e '.[dev]'
 uv run pytest -q           # database tests are skipped unless TEST_DATABASE_URL is set
-TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/reroute_test uv run pytest -q   # all 58
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/reroute_test uv run pytest -q   # all tests
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -190,13 +190,16 @@ The vehicle view shows the same reason as one quiet line under the next stops, n
 
 | predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| scheduled (zero delay) | 104.1 (98.5 to 109.7) | 148.0 (138.3 to 158.8) | -80.4 | 107.7 | 102.9 | 103.5 | 105.9 |
-| persistence (BaselinePredictor) | 44.5 (43.2 to 45.9) | 67.3 (62.6 to 73.5) | -12.5 | 23.2 | 32.5 | 48.9 | 66.1 |
-| historical median (line, stop, hour) | 112.4 (108.6 to 116.5) | 136.9 (130.9 to 144.7) | +57.6 | 106.0 | 110.0 | 112.5 | 118.6 |
-| calibrated persistence | 49.6 (48.4 to 50.9) | 71.7 (67.4 to 77.4) | +21.7 | 23.2 | 34.2 | 53.6 | 79.7 |
-| gradient boosted trees (median) | 40.6 (39.6 to 41.7) | 58.7 (56.4 to 61.2) | -4.5 | 18.4 | 29.3 | 44.9 | 61.6 |
+| scheduled (zero delay) | 104.0 (98.6 to 109.8) | 148.1 (138.5 to 158.7) | -80.4 | 107.5 | 102.9 | 103.5 | 105.8 |
+| persistence (BaselinePredictor) | 44.4 (43.1 to 45.8) | 67.0 (62.6 to 72.4) | -12.5 | 23.0 | 32.4 | 48.9 | 66.0 |
+| historical median (line, stop, hour) | 112.4 (108.7 to 116.3) | 137.0 (130.7 to 144.0) | +57.6 | 105.9 | 110.1 | 112.6 | 118.6 |
+| calibrated persistence | 49.5 (48.4 to 50.9) | 71.4 (67.5 to 76.2) | +21.8 | 22.9 | 34.2 | 53.5 | 79.7 |
+| gradient boosted trees (median) | 40.6 (39.6 to 41.7) | 58.7 (56.6 to 61.0) | -4.5 | 18.2 | 29.2 | 44.9 | 61.5 |
+| ridge regression (same features) | 46.0 (44.8 to 47.3) | 66.1 (62.6 to 70.2) | +0.5 | 31.3 | 33.8 | 48.0 | 69.6 |
 
-80% interval on the test fold: model coverage 79.9% (79.2% to 80.6%), mean width 132 s; persistence plus empirical residual quantiles: coverage 87.8% (87.2% to 88.3%), mean width 198 s.
+80% interval on the test fold: model coverage 79.9% (79.2% to 80.6%), mean width 132 s; persistence plus empirical residual quantiles: coverage 87.8% (87.2% to 88.4%), mean width 198 s.
+
+The ridge row is a plain linear regression on the same 14 features and the same target, fitted offline on the same training window and scored by the same code (`backend/ml/linear.py`); it is not served. It is worse than persistence (46.0 s against 44.4 s), so a linear model does not capture what the trees add: the trees' MAE is 11.7% lower than ridge (bootstrap interval 10.6% to 12.9%) and about 9% lower than persistence. Ridge only wins on bias (+0.5 s) and is weak for the nearest stops, where persistence is hard to beat.
 
 The best baseline, chosen on the calibration window and not on the test window, is the existing persistence predictor. The model's MAE is **8.7% lower** (bootstrap interval 7.3% to 10.1%), RMSE about 13% lower. By horizon the relative gain is 21%, 10%, 8% and 7%: largest for the nearest stops, and the nearest bin is also the one with the fewest samples. The 80% interval covered 79.9% of test arrivals; the persistence-plus-empirical-quantiles interval covers more because it is wider (198 s against 132 s).
 
@@ -207,6 +210,39 @@ How far to trust these numbers: the bootstrap interval is sampling uncertainty i
 <p align="center">
   <img src="docs/ml/mae_by_horizon.svg" width="720" alt="MAE by horizon, model against persistence">
 </p>
+
+**Does the 80% interval mean 80%?** Checked on the held-out window (so not on the data that set the interval width), per scheduled time to the stop and per hour of the Warsaw clock. A bin with fewer than 200 predictions is not shown; every share has a bootstrap interval that resamples whole trips.
+
+| scheduled time to the stop | predictions | coverage (95% interval) | missed below / above | mean width |
+| --- | --- | --- | --- | --- |
+| under 2 min | 11,859 | 78.8% (77.8% to 79.8%) | 10.2% / 11.0% | 53 s |
+| 2 to 5 min | 62,156 | 79.2% (78.5% to 79.8%) | 10.6% / 10.2% | 92 s |
+| 5 to 10 min | 55,946 | 80.4% (79.5% to 81.3%) | 10.1% / 9.5% | 147 s |
+| 10 min or more | 34,764 | 80.9% (79.4% to 82.2%) | 10.9% / 8.2% | 204 s |
+
+By hour, the test window covers only 21:00 (79.9%, 151,443 predictions) and 22:00 (79.8%, 13,282); the calibration window's 20:00 and 21:00 are 80.3% and 79.6%. So the interval is close to 80% at every distance (the nearest stops are about 1 point low) and misses about equally on both sides, except for the 22:00 hour where it is early more often (12.9% against 7.3%, on 729 trips). Only three evening hours exist in the data, so this says nothing about the morning, midday or night. The full tables are in [docs/ml/results.md](docs/ml/results.md); the two charts below show the same.
+
+<p align="center">
+  <img src="docs/ml/calibration_by_horizon.svg" width="640" alt="Interval coverage by scheduled time to the stop">
+  <img src="docs/ml/calibration_by_hour.svg" width="640" alt="Interval coverage by hour of the day">
+</p>
+
+The calibration and ridge figures were added to the stored model without retraining (`make ml-credibility`): the folds were rebuilt from the same recorded data and differ from the original run by 0.1% of samples (for example 164,725 test samples against 164,593), because a few arrivals were derived slightly differently on rebuild; the trees' MAE moved from 40.62 s to 40.60 s. The trees, the version and the decision to serve them are unchanged.
+
+### What the model knows and does not know
+
+Knows, with figures from the held-out window:
+- How a delay tends to evolve over the next 1 to 12 stops of a trip on a weekday evening, given the vehicle's latest delay, how other vehicles on the line and at the stop are doing, and the vehicle ahead. It beats "the delay persists" by about 4 s of MAE (44.4 s to 40.6 s, 8.7% in the training run), most for the nearest stops (about 20% for the stop that follows).
+- How uncertain it is: the 80% interval covered 79.9% overall and 78.8% to 80.9% at every distance.
+
+Does not know:
+- Anything outside one evening: no weekend, morning rush, holiday, winter, or disruption. The gain may be different or gone there; the interval may be too narrow there.
+- Weather, events, road works and traffic: none is an input.
+- True arrival times: labels are interpolated between vehicle reports.
+- More than 12 stops ahead, or a vehicle whose reports are older than 120 s: the baseline answers there and the interval and reason are absent.
+- Why a delay happens. The reason line lists what moved the number, not causes.
+
+The same summary is served at `/api/model` and shown in the app under "About the model" (English and Polish).
 
 **Explainability.** Global importance (mean absolute SHAP value on the test window) and partial dependence of the four strongest features, produced by the training command:
 

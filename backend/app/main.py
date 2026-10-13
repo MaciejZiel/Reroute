@@ -11,6 +11,7 @@ from .api_live import router as live_router
 from .database import SessionLocal, wait_for_database
 from .demo_data import seed_demo_network
 from .migrate import migrate
+from .model_card import router as model_router
 
 
 @asynccontextmanager
@@ -41,3 +42,4 @@ app.add_middleware(
 )
 app.include_router(router)
 app.include_router(live_router)
+app.include_router(model_router)

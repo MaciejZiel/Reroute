@@ -14,12 +14,14 @@ interface Props {
   onTrams: (value: boolean) => void;
   punctuality: boolean;
   onPunctuality: () => void;
+  model: boolean;
+  onModel: () => void;
   zoomedOut: boolean;
 }
 
 /** Layer controls floating over the map: the city-wide vehicle switch, mode filters and the secondary view. */
 export default function MapControls(props: Props) {
-  const { t, showAll, onShowAll, allowShowAll, vehicleCount, showBuses, showTrams, onBuses, onTrams, punctuality, onPunctuality, zoomedOut } = props;
+  const { t, showAll, onShowAll, allowShowAll, vehicleCount, showBuses, showTrams, onBuses, onTrams, punctuality, onPunctuality, model, onModel, zoomedOut } = props;
   return (
     <div className="map-controls">
       {allowShowAll && (
@@ -32,6 +34,7 @@ export default function MapControls(props: Props) {
         <button type="button" className="mode-chip bus" aria-pressed={showBuses} onClick={() => onBuses(!showBuses)}><i aria-hidden="true"/>{t("buses")}</button>
         <button type="button" className="mode-chip tram" aria-pressed={showTrams} onClick={() => onTrams(!showTrams)}><i aria-hidden="true"/>{t("trams")}</button>
         <button type="button" className="mode-chip plain" aria-pressed={punctuality} onClick={onPunctuality}>{t("punctualityShort")}</button>
+        <button type="button" className="mode-chip plain" aria-pressed={model} onClick={onModel}>{t("modelChip")}</button>
       </div>
       {zoomedOut && <p className="zoom-hint" role="status">{t("zoomForStops")}</p>}
     </div>

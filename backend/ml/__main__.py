@@ -36,41 +36,10 @@ def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def results_table(card: dict) -> str:
-    """The comparison as a markdown table (also what the README quotes)."""
-    scores, interval = card["scores"], card["interval"]
-    horizons = list(next(iter(scores.values()))["by_horizon"])
-    lines = [
-        "| predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | "
-        + " | ".join(f"MAE {h}" for h in horizons)
-        + " |",
-        "| --- | --- | --- | --- | " + " | ".join("---" for _ in horizons) + " |",
-    ]
-    for name, score in scores.items():
-        cells = [f"{score['by_horizon'][h]['mae']['value']:.1f}" for h in horizons]
-        mae, rmse = score["mae"], score["rmse"]
-        lines.append(
-            f"| {name} | {mae['value']:.1f} ({mae['low']:.1f} to {mae['high']:.1f}) "
-            f"| {rmse['value']:.1f} ({rmse['low']:.1f} to {rmse['high']:.1f}) "
-            f"| {score['bias']['value']:+.1f} | " + " | ".join(cells) + " |"
-        )
-    cov, naive = interval["model_coverage"], interval["naive_coverage"]
-    lines += [
-        "",
-        f"80% interval on the test fold: model coverage {cov['value']:.1%} "
-        f"({cov['low']:.1%} to {cov['high']:.1%}), "
-        f"mean width {interval['model_mean_width_s']:.0f} s; "
-        f"persistence plus empirical residual quantiles: coverage {naive['value']:.1%} "
-        f"({naive['low']:.1%} to {naive['high']:.1%}), "
-        f"mean width {interval['naive_mean_width_s']:.0f} s.",
-    ]
-    return "\n".join(lines) + "\n"
-
-
 def run_train(args: argparse.Namespace) -> int:
     import numpy as np
 
-    from . import dataset, evaluate, report, train
+    from . import dataset, evaluate, linear, report, train
 
     events = dataset.load_events(args.events)
     print(f"{len(events)} arrivals, {len({e.trip_id for e in events})} trips", file=sys.stderr)
@@ -85,7 +54,10 @@ def run_train(args: argparse.Namespace) -> int:
         parts["train"], parts["early_stop"], parts["calibration"], exclude=tuple(exclude)
     )
     test = parts["test"]
-    evaluation = evaluate.evaluate(heads, parts["train"], parts["calibration"], test, train.NOMINAL)
+    ridge = linear.fit(parts["train"], parts["early_stop"], heads.features)
+    evaluation = evaluate.evaluate(
+        heads, parts["train"], parts["calibration"], test, train.NOMINAL, ridge
+    )
     first, last = min(e.actual_s for e in events), max(e.actual_s for e in events)
     card = report._plain(
         {
@@ -116,6 +88,7 @@ def run_train(args: argparse.Namespace) -> int:
             "lags_in_stops": list(dataset.DEFAULT_LAGS),
             "features": heads.features,
             "rounds": heads.rounds,
+            "linear": report.linear_summary(ridge),
             "params": train.PARAMS,
             "trained_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **evaluation,
@@ -133,8 +106,9 @@ def run_train(args: argparse.Namespace) -> int:
     report.write_json(args.model_out, document, compact=True)
     report.write_json(args.report_dir / "report.json", card)
     ranked = report.write_plots(args.report_dir, heads, evaluation, test)
-    (args.report_dir / "results.md").write_text(results_table(card), encoding="utf-8")
-    print(results_table(card))
+    table = report.results_table(card)
+    (args.report_dir / "results.md").write_text(table, encoding="utf-8")
+    print(table)
     gain = card["gain_vs_best_baseline"]
     print(
         f"best baseline (chosen on the calibration fold): {card['best_baseline']}\n"
@@ -180,7 +154,36 @@ def main() -> int:
         "--since", help="UTC time (ISO 8601); default: the last arrival the model was trained on"
     )
     frozen.add_argument("--out", type=Path, help="also write the table to this markdown file")
+    cred = commands.add_parser(
+        "credibility",
+        help="add the ridge comparison and the interval calibration to the stored model's card",
+    )
+    cred.add_argument("--model", type=Path, default=Path("models/delay_model.json"))
+    cred.add_argument("--events", type=Path, required=True)
+    cred.add_argument("--observations", type=Path)
+    cred.add_argument("--report-dir", type=Path, default=Path("../docs/ml"))
+    cred.add_argument(
+        "--known-until",
+        help="UTC time (ISO 8601) the training data was pulled; later arrivals are ignored",
+    )
+    cred.add_argument("--allow-mismatch", action="store_true")
     args = parser.parse_args()
+    if args.command == "credibility":
+        require_libraries("numpy")
+        from . import credibility
+        from .frozen import parse_utc
+
+        card, problems = credibility.add_credibility(
+            args.model,
+            args.events,
+            args.observations,
+            args.report_dir,
+            parse_utc(args.known_until) if args.known_until else None,
+            args.allow_mismatch,
+        )
+        print("\n".join(problems) or "folds identical to the training run")
+        print((args.report_dir / "results.md").read_text(encoding="utf-8"))
+        return 0
     if args.command == "evaluate-frozen":
         require_libraries("numpy")
         from . import frozen as frozen_check
