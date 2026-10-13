@@ -101,6 +101,14 @@ _fallback_error: str | None = None
 
 
 def collector_is_fresh(db: Session) -> bool:
+    """A collector polled recently (even if the feed was stale), or positions are recent."""
+    beat = db.scalar(
+        select(tables.collector_state.c.updated_at).where(
+            tables.collector_state.c.key == store.HEARTBEAT_KEY
+        )
+    )
+    if beat is not None and datetime.now(UTC) - beat < FRESH_FOR:
+        return True
     newest = db.scalar(
         select(tables.vehicle_latest.c.observed_at)
         .order_by(tables.vehicle_latest.c.observed_at.desc())

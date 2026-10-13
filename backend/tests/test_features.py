@@ -69,6 +69,28 @@ def test_training_rows_only_use_earlier_stops_of_the_same_trip(
     assert json.loads(out.getvalue().splitlines()[0])["trip_id"] == "T1"
 
 
+def test_stops_crossed_between_the_same_two_fixes_are_not_features_of_each_other(
+    db: Session, pg_engine: Engine
+) -> None:
+    # Stops 2 and 3 were both passed between fixes 40 s apart: stop 2's time comes from the
+    # fix taken after the vehicle had already passed stop 3, so it is not known before stop 3.
+    first = _event(2, 30, 0) | {"trip_id": "T3", "gap_s": 40}
+    second = _event(3, 20, 0) | {"trip_id": "T3", "gap_s": 40}
+    second["actual_at"] = first["actual_at"] + timedelta(seconds=20)
+    third = _event(4, 25, 5) | {"trip_id": "T3"}
+    store.write_poll(pg_engine, PollResult(arrivals=[first, second, third]))
+
+    rows = list(export_training_rows(pg_engine, DAY, DAY))
+
+    assert [row["previous_stop_delay_s"] for row in rows] == [None, None, 20]
+    assert rows[2]["delay_two_stops_back_s"] == 30
+    assert rows[2]["features_known_at"] == second["actual_at"] + timedelta(seconds=40)
+    assert all(
+        row["features_known_at"] is None or row["features_known_at"] <= row["actual_at"]
+        for row in rows
+    )
+
+
 def test_live_features_know_the_vehicle_delay_and_the_previous_stop(
     db: Session, pg_engine: Engine
 ) -> None:

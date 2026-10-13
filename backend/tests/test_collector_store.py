@@ -4,6 +4,7 @@ import gzip
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from geoalchemy2.shape import from_shape
 from google.transit import gtfs_realtime_pb2
 from gtfs_rt_kit import Alert, EntitySelector, TimeRange, TranslatedString, Translation
@@ -16,7 +17,7 @@ from app.collector.backfill import run_backfill
 from app.collector.config import Settings
 from app.collector.derive import VehicleState
 from app.collector.metrics import Metrics
-from app.collector.service import Pipeline, write_delay_rollup
+from app.collector.service import Pipeline, run, write_delay_rollup
 from app.models import PatternStop, Route, Stop, StopPattern, TripSchedule
 from app.timeutil import service_instant
 
@@ -212,3 +213,15 @@ def test_health_turns_unhealthy_when_polls_stop() -> None:
     metrics.last_success -= 61
     assert not metrics.healthy()
     assert "reroute_collector_polls_ok_total 0" in metrics.render()
+
+
+def test_live_loop_writes_a_heartbeat_even_when_the_feed_is_down(
+    db: Session, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("signal.signal", lambda *args: None)  # keep pytest's handlers
+    down = "http://127.0.0.1:9/vehicles.pb"
+    settings = Settings(vehicles_url=down, alerts_url=down)
+
+    run(pg_engine, settings, once=True)
+
+    assert store.get_state(pg_engine, store.HEARTBEAT_KEY) is not None
