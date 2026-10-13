@@ -1,4 +1,4 @@
-import { clock, delayClass, delayText, lineOrder } from "./format";
+import { clock, delayClass, delayText, firstExplained, lineOrder, preciseDelayText } from "./format";
 import type { LineScope } from "./vehicles";
 import type { TranslationKey } from "./i18n";
 import type { Polled } from "./usePolled";
@@ -45,14 +45,15 @@ function inMinutes(departure: Departure, t: T) {
   return departure.minutes === 0 ? t("now") : `${departure.minutes} ${t("min")}`;
 }
 
-/** One quiet line under the next stops: what the model says moved the first prediction. */
+/** One quiet line under the next stops: why the model expects what it does at the named stop. */
 function WhyLine({ stop, t }: { stop: NextStop; t: T }) {
   const range = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null
-    ? `${t("likelyRange")}: ${delayText(stop.lower_delay_seconds, t("min"))} … ${delayText(stop.upper_delay_seconds, t("min"))}`
+    ? `${t("likelyRange")}: ${preciseDelayText(stop.lower_delay_seconds, t("min"))} … ${preciseDelayText(stop.upper_delay_seconds, t("min"))}`
     : null;
   return (
     <p className="why-note">
-      <span className="section-kicker">{t("whyThis")}</span>
+      <span className="section-kicker">{t("whyThis")}: {stop.name}</span>
+      <span className="sr-only">. </span>
       <span lang="en">{stop.why?.summary}</span>
       {range && <small>{range}</small>}
     </p>
@@ -206,7 +207,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
               <span className="timeline-times"><b>{clock(stop.predicted_at ?? stop.scheduled_at, language)}</b>{stop.predicted_at && <small>{t("scheduled")} {clock(stop.scheduled_at, language)}</small>}</span>
             </li>))}</ol>
         </>}
-        {data.next_stops[0]?.why && <WhyLine stop={data.next_stops[0]} t={t}/>}
+        {(() => { const explained = firstExplained(data.next_stops); return explained && <WhyLine stop={explained} t={t}/>; })()}
         <p className="estimate-note">{t("estimateNote")} {data.model.kind === "baseline" ? t("modelBaseline") : `${t("modelOther")}: ${data.model.name} ${data.model.version}.`}</p>
       </>}
     </>
