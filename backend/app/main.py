@@ -23,7 +23,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Reroute API",
-    description="Local API for exploring Warsaw transit and simulating disruption impacts.",
+    description="Live Warsaw transit: stop departures, line vehicles and delays.",
     version="0.1.0",
     lifespan=lifespan,
 )

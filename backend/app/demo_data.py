@@ -9,8 +9,7 @@ from shapely.geometry import LineString, Point
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .geo import distance_meters
-from .models import DelaySnapshot, Route, RouteSegment, RouteStop, Stop, VehiclePosition
+from .models import DelaySnapshot, Route, RouteStop, Stop, VehiclePosition
 
 STOPS = [
     ("centrum", "Centrum", 52.2298, 21.0118),
@@ -82,10 +81,6 @@ ROUTES = [
 ]
 
 # Fictional timetable: average speed in km/h and departures per direction per day.
-SPEEDS_KMH = {"tram": 20.0, "bus": 17.0}
-DAILY_TRIPS = {"demo-tram-9": 108, "demo-tram-7": 108, "demo-bus-175": 90, "demo-bus-118": 54}
-SERVICE_MINUTES = 18 * 60
-DWELL_SECONDS = 30
 
 VEHICLES = [
     ("D-101", "9", "tram", 52.2162, 21.0087, 3),
@@ -98,38 +93,12 @@ VEHICLES = [
 ]
 
 
-def demo_segments() -> list[RouteSegment]:
-    """Both directions of every demo route, timed from distance and a fixed average speed."""
-    positions = {stop_id: (lat, lon) for stop_id, _, lat, lon in STOPS}
-    segments = []
-    for route in ROUTES:
-        speed_mps = SPEEDS_KMH[route["mode"]] / 3.6
-        for direction in (route["stops"], list(reversed(route["stops"]))):
-            for from_stop, to_stop in zip(direction, direction[1:], strict=False):
-                distance = distance_meters(*positions[from_stop], *positions[to_stop])
-                segments.append(
-                    RouteSegment(
-                        route_id=route["id"],
-                        from_stop_id=from_stop,
-                        to_stop_id=to_stop,
-                        run_seconds=round(distance / speed_mps) + DWELL_SECONDS,
-                        trips=DAILY_TRIPS[route["id"]],
-                        service_minutes=SERVICE_MINUTES,
-                    )
-                )
-    return segments
-
-
 def seed_demo_network(session: Session) -> None:
-    """Insert the fictional network, replacing an older demo seed that lacks timings."""
+    """Insert the fictional network unless it is already complete."""
     demo_routes = select(Route.id).where(Route.is_demo.is_(True))
     route_count = len(session.scalars(demo_routes).all())
-    has_segments = session.scalar(
-        select(RouteSegment.route_id).where(RouteSegment.route_id.in_(demo_routes)).limit(1)
-    )
-    if route_count == len(ROUTES) and has_segments:
+    if route_count == len(ROUTES):
         return
-    session.execute(delete(RouteSegment).where(RouteSegment.route_id.in_(demo_routes)))
     session.execute(delete(RouteStop).where(RouteStop.route_id.in_(demo_routes)))
     session.execute(delete(Route).where(Route.is_demo.is_(True)))
     session.execute(delete(Stop).where(Stop.is_demo.is_(True)))
@@ -168,7 +137,6 @@ def seed_demo_network(session: Session) -> None:
 
     session.flush()
     session.add_all(route_stops)
-    session.add_all(demo_segments())
 
     now = datetime.now(UTC)
     for vehicle_number, line, mode, latitude, longitude, minutes_ago in VEHICLES:

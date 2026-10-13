@@ -1,20 +1,16 @@
-"""Read-only network endpoints and explainable disruption simulations."""
+"""Network, health and punctuality endpoints."""
 
 import csv
 import gzip
 import io
-import json
-import math
-import threading
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from statistics import median
-from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
-from sqlalchemy import distinct, func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import get_db
@@ -24,38 +20,16 @@ from .models import (
     DelaySnapshot,
     FeedMetadata,
     Route,
-    RouteSegment,
-    RouteStop,
-    SimulationRecord,
     Stop,
 )
-from .routing import Detour as RoutingDetour
-from .routing import (
-    Disruption,
-    GraphRoute,
-    GraphStop,
-    Segment,
-    TransitGraph,
-    analyse_disruption,
-    distance_meters,
-)
 from .schemas import (
-    AffectedRoute,
-    AlternativeRoute,
-    AlternativeStop,
     Feature,
     FeatureCollection,
     HealthResponse,
-    JourneyLeg,
     LinePunctuality,
     PunctualityPoint,
     PunctualityResponse,
-    RouteLabel,
-    RoutingSummary,
-    SimulationRequest,
-    SimulationResponse,
 )
-from .schemas import Detour as DetourResponse
 
 router = APIRouter(prefix="/api")
 FEED_ID = "warsaw-static-gtfs"
@@ -224,322 +198,10 @@ def _line_punctuality(rows: list[DelaySnapshot]) -> list[LinePunctuality]:
     return sorted(result, key=lambda item: (-item.observations, item.line))
 
 
-@router.post("/simulations", response_model=SimulationResponse, tags=["simulations"])
-def simulate(
-    request: SimulationRequest,
-    db: Session = Depends(get_db),
-) -> SimulationResponse:
-    alternative_routes: list[AlternativeRoute] = []
-    alternative_stops: list[AlternativeStop] = []
-    if request.target_type == "stop":
-        stop = db.get(Stop, request.target_id)
-        if stop is None:
-            raise HTTPException(status_code=404, detail="Stop not found")
-        is_demo = stop.is_demo
-        graph = load_graph(db, is_demo)
-        closed_stop_ids = platform_group(graph, stop.id)
-        disruption = Disruption(
-            request.disruption_type,
-            stop_ids=frozenset(closed_stop_ids),
-            slowdown_factor=request.slowdown_factor,
-        )
-        routes = db.scalars(
-            select(Route)
-            .join(RouteStop, RouteStop.route_id == Route.id)
-            .where(RouteStop.stop_id.in_(closed_stop_ids), Route.is_demo.is_(is_demo))
-            .distinct()
-            .order_by(Route.short_name)
-        ).all()
-        affected_stops = [stop.name]
-        affected_stop_count = len(closed_stop_ids)
-        alternative_stops = _nearby_stop_suggestions(db, stop)
-    else:
-        route = db.get(Route, request.target_id)
-        if route is None:
-            raise HTTPException(status_code=404, detail="Route not found")
-        is_demo = route.is_demo
-        graph = load_graph(db, is_demo)
-        closed_stop_ids = []
-        disruption = Disruption(
-            request.disruption_type,
-            route_ids=frozenset([route.id]),
-            slowdown_factor=request.slowdown_factor,
-        )
-        routes = [route]
-        route_stops = db.execute(
-            select(RouteStop.stop_id, Stop.name)
-            .join(Stop, Stop.id == RouteStop.stop_id)
-            .where(RouteStop.route_id == route.id, Stop.is_demo.is_(route.is_demo))
-            .order_by(RouteStop.sequence)
-        ).all()
-        affected_stops = list(dict.fromkeys(name for _, name in route_stops))
-        stop_ids = list({stop_id for stop_id, _ in route_stops})
-        affected_stop_count = len(stop_ids)
-        rows = db.execute(
-            select(
-                Route.id,
-                Route.short_name,
-                Route.mode,
-                func.count(distinct(RouteStop.stop_id)).label("shared_stops"),
-            )
-            .join(RouteStop, RouteStop.route_id == Route.id)
-            .where(
-                RouteStop.stop_id.in_(stop_ids),
-                Route.id != route.id,
-                Route.is_demo.is_(route.is_demo),
-            )
-            .group_by(Route.id, Route.short_name, Route.mode)
-            .order_by(func.count(distinct(RouteStop.stop_id)).desc(), Route.short_name)
-            .limit(12)
-        ).all()
-        alternative_routes = [
-            AlternativeRoute(
-                id=route_id,
-                label=label,
-                mode=mode,
-                shared_stops=shared_stops,
-            )
-            for route_id, label, mode, shared_stops in rows
-        ]
-
-    if not routes:
-        raise HTTPException(status_code=422, detail="No routes serve this stop")
-
-    impact = analyse_disruption(graph, disruption, request.duration_minutes)
-    affected_routes = [
-        AffectedRoute(
-            id=route.id,
-            label=route.short_name,
-            mode=route.mode,
-            affected_stops=affected_stop_count,
-            affected_trips=impact.trips_by_route.get(route.id, 0),
-        )
-        for route in routes
-    ]
-    routing = RoutingSummary(
-        affected_trips=impact.affected_trips,
-        affected_segments=impact.affected_segments,
-        sampled_journeys=len(impact.detours),
-        average_added_minutes=impact.average_added_minutes,
-        max_added_minutes=impact.max_added_minutes,
-        unreachable_journeys=impact.unreachable_pairs,
-        slowdown_factor=request.slowdown_factor if request.disruption_type == "slowdown" else None,
-        closed_stop_ids=closed_stop_ids,
-    )
-    detours = [_detour_response(graph, detour) for detour in impact.detours[:8]]
-    impact_score = sum(route.affected_stops for route in affected_routes) * request.duration_minutes
-    created_at = datetime.now(UTC)
-    result_payload = {
-        "affected_routes": [route.model_dump() for route in affected_routes],
-        "affected_stops": affected_stops,
-        "affected_stop_count": affected_stop_count,
-        "alternative_routes": [route.model_dump() for route in alternative_routes],
-        "alternative_stops": [stop.model_dump() for stop in alternative_stops],
-        "routing": routing.model_dump(),
-        "detours": [detour.model_dump() for detour in detours],
-        "impact_score": impact_score,
-    }
-    record = SimulationRecord(
-        id=str(uuid4()),
-        target_type=request.target_type,
-        target_id=request.target_id,
-        disruption_type=request.disruption_type,
-        duration_minutes=request.duration_minutes,
-        result_json=json.dumps(result_payload),
-        created_at=created_at,
-    )
-    db.add(record)
-    db.commit()
-    return SimulationResponse(
-        id=record.id,
-        target_type=record.target_type,
-        target_id=record.target_id,
-        disruption_type=record.disruption_type,
-        duration_minutes=record.duration_minutes,
-        affected_routes=affected_routes,
-        affected_stops=affected_stops,
-        alternative_routes=alternative_routes,
-        alternative_stops=alternative_stops,
-        routing=routing,
-        detours=detours,
-        affected_stop_count=affected_stop_count,
-        impact_score=impact_score,
-        data_mode="demo" if is_demo else "live",
-        notice=(
-            "Timetable-based estimate. A closure removes the disrupted stop or line from the "
-            "stop graph, a slowdown stretches its scheduled run times; detours are shortest "
-            "paths with walking and transfer penalties, not live passenger counts or "
-            "official forecasts."
-        ),
-        created_at=created_at,
-    )
-
-
-_graph_cache: dict[bool, tuple[object, TransitGraph]] = {}
-_graph_lock = threading.Lock()
-
-
-def load_graph(db: Session, is_demo: bool) -> TransitGraph:
-    """Stop graph of the demo network or the imported timetable, rebuilt after an import."""
-    version = _network_version(db, is_demo)
-    cached = _graph_cache.get(is_demo)
-    if cached and cached[0] == version:
-        return cached[1]
-    with _graph_lock:
-        cached = _graph_cache.get(is_demo)
-        if cached and cached[0] == version:
-            return cached[1]
-        graph = build_graph(db, is_demo)
-        _graph_cache[is_demo] = (version, graph)
-        return graph
-
-
 def _network_version(db: Session, is_demo: bool) -> object:
     if is_demo:
         return "demo"  # seeded once at startup, before any request
     return db.scalar(select(FeedMetadata.downloaded_at).where(FeedMetadata.id == FEED_ID))
-
-
-def build_graph(db: Session, is_demo: bool) -> TransitGraph:
-    """Build the stop graph of either the demo network or the imported timetable."""
-    stops = db.execute(
-        select(Stop.id, Stop.name, Stop.latitude, Stop.longitude).where(Stop.is_demo.is_(is_demo))
-    ).all()
-    routes = db.execute(
-        select(Route.id, Route.short_name, Route.mode).where(Route.is_demo.is_(is_demo))
-    ).all()
-    segments = db.execute(
-        select(
-            RouteSegment.route_id,
-            RouteSegment.from_stop_id,
-            RouteSegment.to_stop_id,
-            RouteSegment.run_seconds,
-            RouteSegment.trips,
-            RouteSegment.service_minutes,
-        )
-        .join(Route, Route.id == RouteSegment.route_id)
-        .where(Route.is_demo.is_(is_demo))
-    ).all()
-    return TransitGraph(
-        (GraphStop(*row) for row in stops),
-        (GraphRoute(*row) for row in routes),
-        (Segment(*row) for row in segments),
-    )
-
-
-def platform_group(graph: TransitGraph, stop_id: str, radius_m: float = 400) -> list[str]:
-    """All platforms that share the stop's name nearby: closing a stop closes all of them."""
-    target = graph.stops.get(stop_id)
-    if target is None:
-        return [stop_id]
-    return sorted(
-        stop.id
-        for stop in graph.stops.values()
-        if stop.name == target.name
-        and distance_meters(target.latitude, target.longitude, stop.latitude, stop.longitude)
-        <= radius_m
-    )
-
-
-def _detour_response(graph: TransitGraph, detour: RoutingDetour) -> DetourResponse:
-    routes = [graph.routes[route_id] for route_id in detour.route_ids]
-    journey = detour.disrupted
-    legs = []
-    for leg in journey.legs if journey else ():
-        leg_route = graph.routes.get(leg.route_id)
-        legs.append(
-            JourneyLeg(
-                kind=leg.kind,
-                line=leg_route.label if leg_route else None,
-                mode=leg_route.mode if leg_route else None,
-                from_stop=graph.stops[leg.from_stop].name,
-                to_stop=graph.stops[leg.to_stop].name,
-                minutes=round(leg.seconds / 60, 1),
-                wait_minutes=round(leg.wait_seconds / 60, 1),
-                stops=leg.stops,
-            )
-        )
-    added = detour.added_seconds
-    return DetourResponse(
-        lines=[RouteLabel(id=route.id, label=route.label, mode=route.mode) for route in routes],
-        origin=graph.stops[detour.origin].name,
-        destination=graph.stops[detour.destination].name,
-        baseline_minutes=round(detour.baseline.seconds / 60, 1),
-        disrupted_minutes=round(journey.seconds / 60, 1) if journey else None,
-        added_minutes=round(added / 60, 1) if added is not None else None,
-        legs=legs,
-    )
-
-
-def _nearby_stop_suggestions(db: Session, target: Stop) -> list[AlternativeStop]:
-    latitude_margin = 500 / 111_000
-    longitude_margin = latitude_margin / max(math.cos(math.radians(target.latitude)), 0.1)
-    candidates = db.scalars(
-        select(Stop).where(
-            Stop.is_demo.is_(target.is_demo),
-            Stop.id != target.id,
-            Stop.name != target.name,
-            Stop.latitude.between(
-                target.latitude - latitude_margin, target.latitude + latitude_margin
-            ),
-            Stop.longitude.between(
-                target.longitude - longitude_margin, target.longitude + longitude_margin
-            ),
-        )
-    ).all()
-    nearby = _rank_nearby_stops(target, candidates)
-    if not nearby:
-        return []
-
-    routes_by_stop: dict[str, set[str]] = {stop.id: set() for stop, _ in nearby}
-    route_rows = db.execute(
-        select(RouteStop.stop_id, Route.short_name)
-        .join(Route, Route.id == RouteStop.route_id)
-        .where(
-            RouteStop.stop_id.in_(routes_by_stop),
-            Route.is_demo.is_(target.is_demo),
-        )
-    ).all()
-    for stop_id, short_name in route_rows:
-        routes_by_stop[stop_id].add(short_name)
-
-    grouped: dict[str, list[tuple[Stop, int]]] = {}
-    for stop, distance in nearby:
-        if routes_by_stop[stop.id]:
-            grouped.setdefault(stop.name, []).append((stop, distance))
-
-    suggestions = []
-    for name, platforms in grouped.items():
-        nearest, distance = platforms[0]
-        line_names = {line for stop, _ in platforms for line in routes_by_stop[stop.id]}
-        suggestions.append(
-            AlternativeStop(
-                id=nearest.id,
-                name=name,
-                latitude=nearest.latitude,
-                longitude=nearest.longitude,
-                distance_m=distance,
-                routes=sorted(line_names),
-            )
-        )
-    return suggestions[:5]
-
-
-def _rank_nearby_stops(
-    target: Stop, candidates: list[Stop], limit: int = 12
-) -> list[tuple[Stop, int]]:
-    suggestions = []
-    for candidate in candidates:
-        distance = _distance_meters(
-            target.latitude, target.longitude, candidate.latitude, candidate.longitude
-        )
-        if 0 < distance <= 500:
-            suggestions.append((candidate, round(distance)))
-    return sorted(suggestions, key=lambda item: item[1])[:limit]
-
-
-def _distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    return distance_meters(lat1, lon1, lat2, lon2)
 
 
 def _schedule_notice(metadata: FeedMetadata | None) -> str:

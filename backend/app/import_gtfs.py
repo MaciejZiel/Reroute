@@ -28,8 +28,8 @@ def main() -> None:
         imported_routes = import_schedule(session, schedule)
     print(
         f"Imported {imported_routes} routes, {len(schedule.stops)} stops, "
-        f"{len(schedule.route_stops)} route-stop connections and {len(schedule.segments)} timed "
-        f"segments ({schedule.service_date or 'all trips'}) from {archive_path}."
+        f"{len(schedule.route_stops)} route-stop connections and {len(schedule.trips)} trips "
+        f"from {archive_path}."
     )
 
 
