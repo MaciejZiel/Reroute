@@ -13,7 +13,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import OperationalError
 
 from . import models  # noqa: F401 — register SQLAlchemy models before create_all.
-from .database import Base, engine
+from .database import Base, admin_engine
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def pending_migrations(applied: set[str]) -> list[Path]:
     return [path for path in sorted(MIGRATIONS_DIR.glob("*.sql")) if path.name not in applied]
 
 
-def migrate(target: Engine = engine) -> list[str]:
+def migrate(target: Engine = admin_engine) -> list[str]:
     """Bring the database up to date and return the names of the files applied now."""
     with target.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
@@ -55,7 +55,7 @@ ARRIVAL_INDEX = "ix_stop_arrival_events_actual_at"
 _INDEX_LOCK = 727402
 
 
-def ensure_arrival_time_index(target: Engine = engine) -> list[str]:
+def ensure_arrival_time_index(target: Engine = admin_engine) -> list[str]:
     """Block-range index on ``stop_arrival_events(actual_at)``, built while the collector runs.
 
     The delay model reads the last hour of arrivals of a few lines and stops; rows arrive in time
@@ -129,7 +129,7 @@ def _has_attached_index(connection, partition: str) -> bool:
     )
 
 
-def drop_arrival_time_index(target: Engine = engine) -> None:
+def drop_arrival_time_index(target: Engine = admin_engine) -> None:
     """The down path: remove the index (a short lock per partition) and forget the old
     ``0004_arrival_time_index.sql`` record, if a database had applied it."""
     with target.begin() as connection:

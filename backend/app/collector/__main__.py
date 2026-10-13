@@ -5,7 +5,8 @@ import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from ..database import engine, wait_for_database
+from ..database import admin_engine as engine
+from ..database import wait_for_database
 from ..migrate import migrate
 from . import store
 from .backfill import run_backfill

@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from gtfs_rt_kit import GtfsRtClient, GtfsRtKitError, parse_feed
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .collector import store, tables
 from .collector.config import Settings
 from .collector.service import Pipeline, write_delay_rollup
-from .database import engine
+from .database import admin_engine
 
 logger = logging.getLogger(__name__)
 FRESH_FOR = timedelta(seconds=120)
@@ -102,46 +102,55 @@ _fallback_error: str | None = None
 
 def collector_is_fresh(db: Session) -> bool:
     """A collector polled recently (even if the feed was stale), or positions are recent."""
-    beat = db.scalar(
-        select(tables.collector_state.c.updated_at).where(
-            tables.collector_state.c.key == store.HEARTBEAT_KEY
+    beat, newest = db.execute(
+        select(
+            select(tables.collector_state.c.updated_at)
+            .where(tables.collector_state.c.key == store.HEARTBEAT_KEY)
+            .scalar_subquery(),
+            select(func.max(tables.vehicle_latest.c.observed_at)).scalar_subquery(),
         )
-    )
-    if beat is not None and datetime.now(UTC) - beat < FRESH_FOR:
-        return True
-    newest = db.scalar(
-        select(tables.vehicle_latest.c.observed_at)
-        .order_by(tables.vehicle_latest.c.observed_at.desc())
-        .limit(1)
-    )
-    return newest is not None and datetime.now(UTC) - newest < FRESH_FOR
+    ).one()
+    now = datetime.now(UTC)
+    return any(stamp is not None and now - stamp < FRESH_FOR for stamp in (beat, newest))
 
 
-def ensure_fresh(db: Session) -> None:
-    """Fetch the feed in-process when no collector keeps ``vehicle_latest`` current."""
+def ensure_fresh(db: Session) -> bool | None:
+    """Fetch the feed in-process when no collector keeps ``vehicle_latest`` current.
+
+    Never makes a request wait for somebody else's fetch: when another request holds the lock the
+    caller serves what ``vehicle_latest`` has. Returns whether a collector is fresh, or ``None``
+    when that was not looked up (a fetch was attempted recently).
+    """
     global _fallback_until, _fallback_pipeline, _fallback_error
-    if time.monotonic() < _fallback_until or collector_is_fresh(db):
-        return
-    with _fallback_lock:
+    if time.monotonic() < _fallback_until:
+        return None
+    if collector_is_fresh(db):
+        return True
+    if not _fallback_lock.acquire(blocking=False):
+        return False
+    try:
         if time.monotonic() < _fallback_until:
-            return
+            return False
         _fallback_until = time.monotonic() + FALLBACK_REFRESH_S
         settings = Settings.from_env()
         if _fallback_pipeline is None:
-            _fallback_pipeline = Pipeline(engine, settings)
+            _fallback_pipeline = Pipeline(admin_engine, settings)
         try:
             with GtfsRtClient(timeout=8.0) as client:
                 feed = parse_feed(client.fetch_bytes(settings.vehicles_url))
             pipeline = _fallback_pipeline
             pipeline.refresh_static()
             result = pipeline.derive(feed)
-            store.upsert_latest(engine, result.observations)
-            store.prune_latest(engine, datetime.now(UTC))
-            write_delay_rollup(engine, datetime.now(UTC))
+            store.upsert_latest(admin_engine, result.observations)
+            store.prune_latest(admin_engine, datetime.now(UTC))
+            write_delay_rollup(admin_engine, datetime.now(UTC))
             _fallback_error = None
         except (GtfsRtKitError, OSError) as error:
             _fallback_error = str(error)
             logger.warning("direct feed fetch failed: %s", error)
+    finally:
+        _fallback_lock.release()
+    return False
 
 
 def fallback_error() -> str | None:
@@ -150,12 +159,14 @@ def fallback_error() -> str | None:
 
 def snapshot(db: Session, line: str | None = None) -> LiveSnapshot:
     """Current vehicles (optionally of one line)."""
-    ensure_fresh(db)
+    collector = ensure_fresh(db)
     vehicles = tuple(_to_vehicle(row) for row in _rows(db, line))
     if not vehicles:
         return LiveSnapshot((), None, "none")
     newest = max(vehicle.observed_at for vehicle in vehicles)
-    return LiveSnapshot(vehicles, newest, "collector" if collector_is_fresh(db) else "direct")
+    if collector is None:
+        collector = collector_is_fresh(db)
+    return LiveSnapshot(vehicles, newest, "collector" if collector else "direct")
 
 
 def vehicles_of_trips(db: Session, trip_ids: list[str]) -> dict[str, LiveVehicle]:

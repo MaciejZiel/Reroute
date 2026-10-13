@@ -305,7 +305,7 @@ def main() -> None:
     import argparse
     import sys
 
-    from .database import engine
+    from .database import admin_engine as engine
 
     parser = argparse.ArgumentParser(prog="python -m app.features", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
