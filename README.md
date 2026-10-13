@@ -21,19 +21,19 @@
   <img alt="React" src="https://img.shields.io/badge/React-19-087EA4?logo=react&logoColor=white">
 </p>
 
-Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival, and a small gradient-boosted model trained on that data predicts delays further down the line, with an interval and a plain-words reason (see [Delay model](#-delay-model)).
+Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival, and a small gradient-boosted model trained on that data predicts delays further down the line, with an interval and a plain-words reason (see [Delay model](#delay-model)).
 
 <p align="center">
   <a href="https://reroute.maciejzielinski.dev"><img src="docs/screenshots/line.png" width="860" alt="Tram line 24 selected from Rondo Daszyńskiego: route, stops, live vehicles and departures with delays"></a>
 </p>
 
-## 🌐 Status and self-hosting
+## Status and self-hosting
 
 - **Live now:** the map, departures with delays estimated from live positions, line and vehicle views and the per-line punctuality view, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
 - **Self-hosted:** the public instance runs on a home server, not on a cloud platform.
-- **Delay model:** a first model exists and is served by default because it beat the baselines on held-out future data, but it was trained on a single evening of data (see the [model card](#-delay-model)). Where the model cannot answer (a trip with no recorded stop yet) the API falls back to "the current delay persists".
+- **Delay model:** a first model exists and is served by default because it beat the baselines on held-out future data, but it was trained on a single evening of data (see the [model card](#delay-model)). Where the model cannot answer (a trip with no recorded stop yet) the API falls back to "the current delay persists".
 
-## ✨ Features
+## Features
 
 - **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On narrow screens the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
 - **Quiet by default.** No vehicles are drawn until you pick a line. A single switch, "Show all vehicles" (off by default), draws the whole fleet as small unlabelled dots for those who want the city-wide picture; names appear only when zoomed in.
@@ -53,7 +53,7 @@ Click a stop to see every line serving it with the next timetable departures and
 
 <p align="center"><sub>Screenshots are of the live deployment, taken with <code>playwright-cli</code> on 13 October 2026 at 1440 px and 400 px widths.</sub></p>
 
-## 🧭 Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -67,7 +67,7 @@ flowchart LR
 
 See [docs/design.md](docs/design.md) for the data model, retention, the collector and the prediction seam.
 
-## 🛠 Tech stack
+## Tech stack
 
 | Layer | Used |
 |---|---|
@@ -76,7 +76,7 @@ See [docs/design.md](docs/design.md) for the data model, retention, the collecto
 | Frontend | React 19, TypeScript, Vite, MapLibre GL, OpenFreeMap vector tiles (OpenStreetMap data) with a custom dark style; oxlint and Vitest |
 | Tooling | pytest, ruff, Docker Compose, GitHub Actions |
 
-## 🚀 Quick start
+## Quick start
 
 ```bash
 cp .env.example .env
@@ -94,7 +94,7 @@ docker compose exec backend python -m app.import_gtfs
 
 Databases imported by an older version need this import again (the API answers 503 with a hint until then). Repeat imports reuse the cached archive; pass `--force-download` for the latest version or `--file` for a local archive. Re-importing replaces only the real network and keeps the demo network.
 
-## 📡 Collector
+## Collector
 
 `docker compose up` also starts the `collector`: a separate process that polls the GTFS-Realtime vehicle and alert feeds every 20 s and records every vehicle observation, the stop arrivals derived from them and service alerts. It serves `/healthz` and Prometheus `/metrics` on port 9100 inside the container. Settings (environment): `POLL_INTERVAL_S`, `OBSERVATION_RETENTION_DAYS` (7), `ARRIVAL_RETENTION_DAYS` (90; about 220 MB a day, use 60 on a 40 GB disk), `RAW_ARCHIVE_DIR` (also keep gzipped raw snapshots), `STORE_UNMATCHED`. Without a collector the API polls the feed itself so a plain `db + backend` start still works.
 
@@ -104,11 +104,11 @@ Replay archived snapshots (`<dir>/<YYYY-MM-DD>/v_<HHMMSS>.pb.gz`, UTC); repeated
 docker compose run --rm -v ~/reroute-data/raw:/raw collector python -m app.collector backfill --raw-dir /raw
 ```
 
-Export training rows for a model: `python -m app.features export --from 2026-10-13 --to 2026-10-20 --out rows.jsonl`. The delay model is trained from the arrival table directly, see [Delay model](#-delay-model); `PREDICTOR=package.module:ClassName` still plugs in any other predictor (see `backend/app/predict.py`).
+Export training rows for a model: `python -m app.features export --from 2026-10-13 --to 2026-10-20 --out rows.jsonl`. The delay model is trained from the arrival table directly, see [Delay model](#delay-model); `PREDICTOR=package.module:ClassName` still plugs in any other predictor (see `backend/app/predict.py`).
 
 Schema changes are plain SQL files in `backend/app/migrations/`, applied at start-up and by `python -m app.migrate`. The one exception is the BRIN index on `stop_arrival_events(actual_at)` that the delay model's live inputs use: it is built by `app.migrate` in code, per partition and `CONCURRENTLY`, so the collector keeps writing while it builds (checked with 4 million rows and inserts running: longest insert 25 ms). Roll it back with `python -m app.migrate --drop-arrival-time-index`.
 
-## 🏠 Deployment on a small server
+## Deployment on a small server
 
 Behind nginx on a self-hosted server, include `deploy/termux/nginx-http.conf` (http block) and `deploy/termux/nginx-location.conf` (server block): per-visitor `limit_req` zones keyed on `CF-Connecting-IP`, stricter for the vehicle and prediction endpoints, which read recent arrivals and may compute an explanation. The configuration was checked with `nginx -t`.
 
@@ -122,7 +122,7 @@ docker compose -f docker-compose.prod.yml exec api python -m app.import_gtfs
 
 Plan for 2 vCPU, 4 GB RAM and 40 GB of disk (arrival retention defaults to 60 days there).
 
-## 🧪 Tests
+## Tests
 
 ```bash
 cd backend
@@ -146,7 +146,7 @@ To run the dev server against a backend without CORS set-up: `API_PROXY_TARGET=h
 
 The `TEST_DATABASE_URL` database must be named `*_test` and have PostGIS available: it is wiped. Without it the pure tests still run: service-day and DST arithmetic, vehicle projection, delays and arrival events (after-midnight trips, the 25 October DST night, loop lines, gaps), a trimmed recording of the real Warsaw feed against its timetables (`backend/tests/fixtures/`), GTFS parsing, features and the predictor seam. The database tests cover the import and migrations, partitions, idempotent writes, state restore after a restart, alerts, incremental backfill, and the API (search, departures with live/late/passed/stale vehicles, 24:xx trips and DST, 503/404, predictions). CI runs them against a PostGIS service plus the frontend type check and build.
 
-## 📊 Performance
+## Performance
 
 Measured on the real Warsaw timetable (314 lines, 7,241 stops, 282,430 trips over 9 service days) with about 1,900 live vehicles, local PostGIS in Docker, with `backend/scripts/benchmark_live.py --runs 100 --seed 7`:
 
@@ -162,7 +162,7 @@ Measured on the real Warsaw timetable (314 lines, 7,241 stops, 282,430 trips ove
 
 Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, service_date)` and the trip primary key, and read the departure time with `split_part` in SQL. Collector: ~86 MiB RSS, 0.14 s per poll; observations ~146 B/row (~6.5M rows, ~0.95 GB a day measured live), arrival events ~170 B/row (~220 MB a day).
 
-## 🧠 Delay model
+## Delay model
 
 `/api/predictions`, the stop panel and the vehicle view ask a `Predictor` for the delay at each upcoming stop. Two exist: the baseline (the vehicle's current delay persists) and a gradient-boosted tree model that predicts how much the delay *changes* between the vehicle's latest recorded stop and a later stop of the same trip, together with an 80% interval and the factors behind the number. Example answer for a stop three stops ahead of a vehicle that is 3 min 15 s late (a real held-out case; it actually arrived 3 min 35 s late):
 
@@ -251,7 +251,7 @@ The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (def
 
 **What would make it better as data grows.** Several weeks would allow weekday, hour and holiday features, per-line and per-stop effects (a target encoding of how much each stop segment typically adds), a validation scheme with several consecutive test windows instead of one, weather as a feature, and a per-horizon calibrated interval. Retraining on a rolling window is one command; the next honest check is whether the margin holds on a day the model has never seen.
 
-## 🧱 Key technical decisions
+## Key technical decisions
 
 - **Demo data first, real data on demand.** A fresh `docker compose up` works offline with a fictional network; every API response carries `data_mode` (`demo` or `live`) plus a source notice. The timetable import is an explicit step and replaces only non-demo rows.
 - **Delays from positions, not from a predictions feed.** The Warsaw feed publishes positions with trip ids but no delays, so the delay is the observation time minus the scheduled time interpolated at the vehicle's projection onto its trip's stops. Trip ids embed the service date (`2026-10-13:140:...`), so a vehicle maps to exactly one stored timetable. GTFS times run from "noon minus 12 hours" of the service day and can exceed 24:00; all instants are computed in UTC from that origin so after-midnight trips and DST days (23 and 25 hours) are right. Vehicles more than 250 m from the trip, waiting at the first stop or outside -15...+90 min get no delay instead of a guess.
@@ -259,7 +259,7 @@ The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (def
 - **Stations, not just platforms.** A stop panel covers all platforms with the same name within 400 m, each departure tagged with its platform.
 - **A replaceable predictor.** The stop panel and vehicle view go through the `Predictor` interface, so the trained model changed numbers and added an interval and a reason, not the structure of the API.
 
-## 🚧 Limitations / next steps
+## Limitations / next steps
 
 - Live positions can include stale or ghost vehicles from the source feed; positions older than 3 minutes get no delay.
 - Delay estimates use straight lines between stops rather than the route shape, and dwell times are not modelled. Arrival times are linear interpolations between observations (typically 30 s apart).
@@ -268,7 +268,7 @@ The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (def
 - The whole-fleet view is a deliberate opt-in: it is about 1,800 dots at city scale. "Heading to my stop" relies on the stop's departure list (next 2 hours, 10 per line), so a vehicle further away than that is not counted.
 - Tests cover the pure derivation, storage, backfill and API against PostGIS, the pure-Python evaluator against committed LightGBM golden values, and, where the training libraries are installed, the model pipeline (no leakage across the time split, live inputs equal training inputs); the frontend has unit tests for the vehicle filtering, the palette contrast and the delay formatting, and Playwright browser tests with the API mocked (`npm run e2e`, in CI): a mouse click on the first search result at 1440 px and 400 px in both languages, the why line in both languages and the paused note.
 
-## 📚 Data and attribution
+## Data and attribution
 
 - Warsaw schedules, routes and stops are provided by ZTM Warsaw in GTFS, distributed by Mikołaj Kuranowski: <https://mkuran.pl/gtfs/>. The feed's `attributions.txt` is retained and exposed by the API.
 - Live positions are published by Miasto Stołeczne Warszawa and distributed as GTFS-Realtime by Mikołaj Kuranowski: <https://mkuran.pl/gtfs/>. The app displays the feed timestamp and city source link; no API key is required. The test fixtures contain a short trimmed recording of this feed and the matching ZTM timetables, with the same attribution.
@@ -276,6 +276,6 @@ The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (def
 
 Source code, comments and technical documentation are in English.
 
-## 📄 Licence
+## Licence
 
 MIT License, see [LICENSE](LICENSE). Transit data fetched from the GTFS feeds remains subject to the terms of its source.
