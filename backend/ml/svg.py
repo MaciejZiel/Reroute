@@ -115,3 +115,62 @@ def line_panels(title: str, panels: list[tuple[str, list[float], list[float]]], 
         body.append(f'<text class="m" x="{ox - 6}" y="{oy + ch}" text-anchor="end">{lo:.0f}</text>')
     body.append(f'<text class="m" x="16" y="{height - 8}">{escape(unit)}</text>')
     return _wrap(width, height, title, "".join(body))
+
+
+def coverage_dots(
+    title: str,
+    rows: list[tuple[str, float, float, float, int, str, bool]],
+    nominal: float,
+    note: str,
+) -> str:
+    """Observed coverage per group as a dot with its bootstrap interval, against the nominal level.
+
+    ``rows`` are (label, coverage, low, high, n, window, held_out) with fractions; a hollow dot is
+    a window the interval was tuned on, a filled one a held-out window. The dashed line is the
+    level the interval promises."""
+    width, height, left, bottom, top = 640, 312, 56, 74, 52
+    plot_h = height - top - bottom
+    lo, hi = 0.6, 1.0
+    cluster = (width - left - 16) / len(rows)
+
+    def y_of(value: float) -> float:
+        return top + plot_h * (1 - (min(max(value, lo), hi) - lo) / (hi - lo))
+
+    body = []
+    for tick in range(5):
+        value = lo + (hi - lo) * tick / 4
+        y = y_of(value)
+        body.append(f'<line class="g" x1="{left}" x2="{width - 16}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        body.append(
+            f'<text class="m" x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{value:.0%}</text>'
+        )
+    y = y_of(nominal)
+    body.append(
+        f'<line x1="{left}" x2="{width - 16}" y1="{y:.1f}" y2="{y:.1f}" stroke="var(--accent)" '
+        'stroke-width="1.5" stroke-dasharray="5 4"/>'
+    )
+    body.append(
+        f'<text x="{width - 16}" y="{y - 6:.1f}" text-anchor="end" fill="var(--accent)" '
+        f'style="fill:var(--accent)">nominal {nominal:.0%}</text>'
+    )
+    for i, (label, value, low, high, n, window, held_out) in enumerate(rows):
+        x = left + i * cluster + cluster / 2
+        body.append(
+            f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{y_of(low):.1f}" y2="{y_of(high):.1f}" '
+            'stroke="var(--model)" stroke-width="2"/>'
+        )
+        fill = "var(--model)" if held_out else "var(--bg, transparent)"
+        body.append(
+            f'<circle cx="{x:.1f}" cy="{y_of(value):.1f}" r="5" fill="{fill}" '
+            f'stroke="var(--model)" stroke-width="2">'
+            f"<title>{escape(label)} ({escape(window)}): {value:.1%} ({low:.1%} to {high:.1%}), "
+            f"{n:,} predictions</title></circle>"
+        )
+        body.append(f'<text x="{x + 9:.1f}" y="{y_of(value) + 4:.1f}">{value:.1%}</text>')
+        for line, text in enumerate((label, window, f"n = {n:,}")):
+            body.append(
+                f'<text class="{"" if line == 0 else "m"}" x="{x:.1f}" '
+                f'y="{height - bottom + 18 + 15 * line}" text-anchor="middle">{escape(text)}</text>'
+            )
+    body.append(f'<text class="m" x="16" y="{height - 8}">{escape(note)}</text>')
+    return _wrap(width, height, title, "".join(body))

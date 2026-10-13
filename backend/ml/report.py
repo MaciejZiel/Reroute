@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -14,8 +15,11 @@ from app.ml.featurize import FEATURE_NAMES
 
 from . import svg
 from .dataset import Samples
+from .evaluate import GBT, RIDGE
 from .export import ensemble_from_booster
-from .train import Heads
+
+if TYPE_CHECKING:  # lightgbm is only needed to train, not to write the report of a stored model
+    from .train import Heads
 
 LABELS = {
     "stops_ahead": "stops ahead of the vehicle",
@@ -68,22 +72,55 @@ def partial_dependence(heads: Heads, sample: Samples, feature: str, points: int 
     return grid.tolist(), effect
 
 
-def write_plots(
-    out: Path, heads: Heads, evaluation: dict, sample: Samples
-) -> dict[str, list[tuple[str, float]]]:
+def write_comparison_plots(out: Path, evaluation: dict) -> None:
+    """MAE by horizon for persistence, the ridge model and the trees, and the interval coverage."""
     out.mkdir(parents=True, exist_ok=True)
+    scores = evaluation["scores"]
+    horizons = list(scores[GBT]["by_horizon"])
     best = evaluation["best_baseline"]
-    model = "gradient boosted trees (median)"
-    horizons = list(evaluation["scores"][model]["by_horizon"])
-    series = {
-        f"{best}": [evaluation["scores"][best]["by_horizon"][h]["mae"].value for h in horizons],
-        "gradient boosted trees": [
-            evaluation["scores"][model]["by_horizon"][h]["mae"].value for h in horizons
-        ],
-    }
+    series = {best: [scores[best]["by_horizon"][h]["mae"].value for h in horizons]}
+    if RIDGE in scores:
+        series["ridge regression"] = [scores[RIDGE]["by_horizon"][h]["mae"].value for h in horizons]
+    series["gradient boosted trees"] = [scores[GBT]["by_horizon"][h]["mae"].value for h in horizons]
     (out / "mae_by_horizon.svg").write_text(
         svg.grouped_bars("Held-out MAE by scheduled time to the stop", horizons, series)
     )
+    calibration = evaluation["calibration"]
+    nominal = calibration["nominal"]
+    windows = [("held out", True, calibration)]
+    for name, held_out in (("calibration window", False), ("early-stop window", False)):
+        key = name.split()[0].replace("-", "_") + "_window"
+        if key in evaluation and evaluation[key]["by_hour"]:
+            windows.append((name, held_out, evaluation[key]))
+    for part, name, title, note in (
+        (
+            "by_horizon",
+            "calibration_by_horizon.svg",
+            "80% interval coverage by scheduled time to the stop",
+            "held-out arrivals inside the interval, with the 95% trip-bootstrap interval",
+        ),
+        (
+            "by_hour",
+            "calibration_by_hour.svg",
+            "80% interval coverage by hour of the day (Warsaw time)",
+            "filled: held out; hollow: windows used to tune the model, so less independent",
+        ),
+    ):
+        rows = []
+        for window, held_out, block in windows if part == "by_hour" else windows[:1]:
+            for label, r in sorted(block[part].items()):
+                if r["enough_data"]:
+                    c = r["coverage"]
+                    rows.append((label, c.value, c.low, c.high, r["n"], window, held_out))
+        if part == "by_hour":
+            rows.sort(key=lambda row: (row[0], not row[6]))
+        (out / name).write_text(svg.coverage_dots(title, rows, nominal, note))
+
+
+def write_plots(
+    out: Path, heads: Heads, evaluation: dict, sample: Samples
+) -> dict[str, list[tuple[str, float]]]:
+    write_comparison_plots(out, evaluation)
     ranked = importance(heads, sample)
     (out / "importance.svg").write_text(
         svg.horizontal_bars(
@@ -104,6 +141,100 @@ def write_plots(
         )
     )
     return {"importance": ranked}
+
+
+def linear_summary(ridge) -> dict:
+    """What the card says about the comparison model: its penalty and standardised weights."""
+    from . import linear
+
+    return {
+        "kind": "ridge regression on the target of the trees (delay change since the latest "
+        "known delay), same features, missing values replaced by the training mean plus a flag",
+        "alpha": ridge.alpha,
+        "coefficients": [
+            {"feature": name, "seconds_per_sd": round(value, 3)}
+            for name, value in linear.coefficients(ridge)
+        ],
+    }
+
+
+def _pct(interval: dict) -> str:
+    return f"{interval['value']:.1%} ({interval['low']:.1%} to {interval['high']:.1%})"
+
+
+def results_table(card: dict) -> str:
+    """The comparison as markdown (also what the README quotes)."""
+    scores, interval = card["scores"], card["interval"]
+    horizons = list(next(iter(scores.values()))["by_horizon"])
+    lines = [
+        "| predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | "
+        + " | ".join(f"MAE {h}" for h in horizons)
+        + " |",
+        "| --- | --- | --- | --- | " + " | ".join("---" for _ in horizons) + " |",
+    ]
+    for name, score in scores.items():
+        cells = [f"{score['by_horizon'][h]['mae']['value']:.1f}" for h in horizons]
+        mae, rmse = score["mae"], score["rmse"]
+        lines.append(
+            f"| {name} | {mae['value']:.1f} ({mae['low']:.1f} to {mae['high']:.1f}) "
+            f"| {rmse['value']:.1f} ({rmse['low']:.1f} to {rmse['high']:.1f}) "
+            f"| {score['bias']['value']:+.1f} | " + " | ".join(cells) + " |"
+        )
+    cov, naive = interval["model_coverage"], interval["naive_coverage"]
+    lines += [
+        "",
+        f"80% interval on the test fold: model coverage {_pct(cov)}, "
+        f"mean width {interval['model_mean_width_s']:.0f} s; "
+        f"persistence plus empirical residual quantiles: coverage {_pct(naive)}, "
+        f"mean width {interval['naive_mean_width_s']:.0f} s.",
+    ]
+    ridge_gain = card.get("gain_vs_ridge")
+    if ridge_gain:
+        lines += [
+            "",
+            f"Trees against the ridge model: MAE {ridge_gain['value']:.1%} lower "
+            f"(bootstrap interval {ridge_gain['low']:.1%} to {ridge_gain['high']:.1%}).",
+        ]
+    calibration = card.get("calibration")
+    if calibration:
+        lines += ["", "Held-out test window:", "", *_calibration_tables(calibration)]
+        for key, heading in (
+            ("calibration_window", "Calibration window (it set the interval width)"),
+            ("early_stop_window", "Early-stopping window (it chose the number of trees)"),
+        ):
+            window = card.get(key)
+            if window and window["by_hour"]:
+                lines += [
+                    "",
+                    f"{heading}, by hour only:",
+                    "",
+                    *_calibration_tables(window, ("by_hour",)),
+                ]
+    return "\n".join(lines) + "\n"
+
+
+def _calibration_tables(calibration: dict, parts=("by_horizon", "by_hour")) -> list[str]:
+    headings = {
+        "by_horizon": "scheduled time to the stop",
+        "by_hour": "hour of the day (Warsaw time)",
+    }
+    lines = []
+    for part in parts:
+        heading = headings[part]
+        lines += [
+            f"| {heading} | predictions | trips | coverage (bootstrap 95% interval) "
+            "| missed below | missed above | mean width s |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for label, row in calibration[part].items():
+            flag = "" if row["enough_data"] else " (few predictions)"
+            lines.append(
+                f"| {label}{flag} | {row['n']:,} | {row['trips']:,} | {_pct(row['coverage'])} "
+                f"| {row['below_share']:.1%} | {row['above_share']:.1%} "
+                f"| {row['mean_width_s']:.0f} |"
+            )
+        lines.append("")
+    return lines[:-1]
 
 
 def model_document(heads: Heads, card: dict, serving_range: dict) -> dict:
