@@ -34,7 +34,10 @@ class Predictor(Protocol):
     version: str
     kind: str  # "baseline" or "model"
 
-    def predict(self, rows: Sequence[FeatureRow]) -> list[Prediction]: ...
+    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
+        """One prediction per row. ``explain`` asks for the reasons of one prediction (the first
+        the model answers); it costs far more than the prediction, so only the vehicle view and
+        the single stop entry that is displayed set it."""
 
 
 class BaselinePredictor:
@@ -44,7 +47,7 @@ class BaselinePredictor:
     version = "1"
     kind = "baseline"
 
-    def predict(self, rows: Sequence[FeatureRow]) -> list[Prediction]:
+    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
         return [
             Prediction(row.current_delay_s, basis="live_delay")
             if row.current_delay_s is not None

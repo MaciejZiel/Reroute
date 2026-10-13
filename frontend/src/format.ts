@@ -10,6 +10,20 @@ export function delayClass(seconds: number | null | undefined): DelayClass {
   return "on-time";
 }
 
+/** "+3 min 20 s", "−45 s": a delay to the second, for ranges that are only a minute wide. */
+export function preciseDelayText(seconds: number, minuteLabel: string): string {
+  const total = Math.round(Math.abs(seconds));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  const body = minutes === 0 ? `${rest} s` : rest === 0 ? `${minutes} ${minuteLabel}` : `${minutes} ${minuteLabel} ${rest} s`;
+  return `${seconds < 0 ? "−" : "+"}${body}`;
+}
+
+/** The first stop of a list that carries a model explanation: not necessarily the first stop. */
+export function firstExplained<T extends { why?: unknown }>(stops: T[]): T | undefined {
+  return stops.find((stop) => stop.why);
+}
+
 /** "+3 min", "−1 min" or "0 min" for a delay in seconds. */
 export function delayText(seconds: number, minuteLabel: string): string {
   const minutes = Math.round(seconds / 60);

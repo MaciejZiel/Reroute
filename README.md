@@ -94,6 +94,8 @@ Schema changes are plain SQL files in `backend/app/migrations/`, applied at star
 
 ## Deployment on a small server
 
+Behind nginx on a self-hosted server, include `deploy/termux/nginx-http.conf` (http block) and `deploy/termux/nginx-location.conf` (server block): per-visitor `limit_req` zones keyed on `CF-Connecting-IP`, stricter for the vehicle and prediction endpoints, which read recent arrivals and may compute an explanation. The configuration was checked with `nginx -t`.
+
 `docker-compose.prod.yml` runs nginx (serving the built frontend and proxying `/api`), the API, the collector and Postgres; only port 80 is published.
 
 ```bash

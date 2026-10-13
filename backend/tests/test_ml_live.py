@@ -328,3 +328,83 @@ def test_a_model_file_with_unknown_features_or_without_a_range_is_refused(
     del document["serving_range"]
     model = DelayModel(document)
     assert not model.in_range({"stops_ahead": 1.0})
+
+
+@pytest.fixture
+def shap_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    from app.ml.ensemble import Ensemble
+
+    calls: list[int] = []
+    original = Ensemble.contributions
+
+    def counting(self, x):
+        calls.append(1)
+        return original(self, x)
+
+    monkeypatch.setattr(Ensemble, "contributions", counting)
+    return calls
+
+
+def _two_live_trips(
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    now: datetime,
+) -> tuple[str, str]:
+    # B departs before A: the first returned entry is B whichever order the trips were found in.
+    a = _today_trip(network, now, 9, "mlA")
+    b = _today_trip(network, now, 6, "mlB")
+    for trip in (a, b):
+        store.write_poll(pg_engine, PollResult(arrivals=[_arrival(trip, 1, "100101", 120, now)]))
+    store.upsert_latest(pg_engine, [_vehicle(a, 120, 1, now), _vehicle(b, 90, 2, now)])
+    return a, b
+
+
+def test_shap_is_computed_only_when_asked_and_never_for_the_departures_board(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    shap_calls: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    trip = _today_trip(network, now, -1, "mlshap")
+    store.write_poll(pg_engine, PollResult(arrivals=[_arrival(trip, 1, "100101", 150, now)]))
+    store.upsert_latest(pg_engine, [_vehicle(trip, 150, 2, now)])
+
+    board = client.get("/api/stops/200101/departures")
+    assert board.status_code == 200 and shap_calls == []
+
+    first = client.get("/api/vehicles/V/9/2").json()
+    assert first["next_stops"][0]["why"] is not None and len(shap_calls) == 1
+    again = client.get("/api/vehicles/V/9/2").json()
+    assert again["next_stops"][0]["why"] == first["next_stops"][0]["why"]
+    assert len(shap_calls) == 1  # the second poll is served from the short cache
+
+    client.get("/api/predictions", params={"trip_id": trip})
+    assert len(shap_calls) <= 2  # at most one explanation per request
+
+
+def test_the_explained_stop_prediction_is_the_first_one_returned(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    a, b = _two_live_trips(network, pg_engine, now)
+
+    body = client.get("/api/predictions", params={"stop_id": "200101", "limit": 5}).json()
+
+    items = [p for p in body["predictions"] if p["trip_id"] in (a, b)]
+    assert [p["trip_id"] for p in items] == sorted(
+        (a, b), key=lambda t: next(p["scheduled_at"] for p in items if p["trip_id"] == t)
+    )
+    explained = [p for p in body["predictions"] if p["why"] is not None]
+    assert len(explained) == 1
+    assert body["predictions"][0]["why"] is not None  # on the entry returned first
