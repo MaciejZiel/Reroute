@@ -16,8 +16,12 @@ export class ApiError extends Error {
   }
 }
 
+/** A hung API must end in an error the UI can show, not an endless spinner. */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${apiBase}/api/${path}`, { signal });
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const response = await fetch(`${apiBase}/api/${path}`, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { detail?: string } | null;
     throw new ApiError(response.status, typeof payload?.detail === "string" ? payload.detail : `API responded with status ${response.status}`);

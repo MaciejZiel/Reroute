@@ -40,9 +40,10 @@ export default function App() {
   const scroller = useRef<HTMLDivElement>(null);
   const t = useCallback((key: TranslationKey) => translate(language, key), [language]);
 
-  useEffect(() => { localStorage.setItem("reroute-language", language); document.documentElement.lang = language; }, [language]);
+  useEffect(() => { localStorage.setItem("reroute-language", language); document.documentElement.lang = language; document.title = translate(language, "documentTitle"); }, [language]);
 
-  const network = usePolled("network", fetchNetwork, 10 * 60_000);
+  const [networkAttempt, setNetworkAttempt] = useState(0);
+  const network = usePolled(`network|${networkAttempt}`, fetchNetwork, 10 * 60_000);
   // The whole fleet is only drawn on request, so poll it slowly in the background (it feeds the counter and status).
   const allVehicles = usePolled("vehicles", fetchVehicles, showAll ? 15_000 : 60_000);
   const stop = usePolled(focus.stopId, (signal) => fetchDepartures(focus.stopId as string, signal), 20_000);
@@ -156,7 +157,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <a className="brand" href="./" aria-label="Reroute"><span className="brand-mark"><RouteIcon /></span><span className="brand-name">reroute<span className="brand-period">.</span></span></a>
-        <p className="tagline">{t("productTitle")}</p>
+        <h1 className="tagline">{t("productTitle")}</h1>
         <div className="topbar-actions">
           <span className={`feed-status ${isLive ? "is-live" : "is-demo"}`}><span className="pulse-dot" />{feedLabel}</span>
           <button type="button" className="language-toggle" onClick={() => setLanguage(language === "pl" ? "en" : "pl")} aria-label={language === "pl" ? "Switch to English" : "Przełącz na polski"}>{language === "pl" ? "EN" : "PL"}</button>
@@ -165,10 +166,6 @@ export default function App() {
 
       <div className="stage">
         <section className="map-stage" aria-label={t("mapTitle")}>
-          <MapCanvas network={networkData} vehicles={visibleVehicles} vehicleLook={focus.lineId ? "focus" : "dense"}
-            showBuses={showBuses} showTrams={showTrams} focusLine={focus.lineId ? line.data : null} picked={picked}
-            selectedVehicleId={focus.vehicleId} fit={fit} flyTo={flyTo} label={t("mapTitle")}
-            onStop={pickStop} onLine={pickLine} onVehicle={pickVehicle} onZoomedOut={setZoomedOut} />
           <div className="map-overlay">
             <SearchBox t={t} onPick={pickSearch} />
             <MapControls t={t} showAll={showAll} onShowAll={setShowAll} allowShowAll={!focus.lineId} vehicleCount={vehicleCount}
@@ -176,21 +173,32 @@ export default function App() {
               punctuality={showPunctuality} onPunctuality={() => { setShowPunctuality(!showPunctuality); setShowModel(false); }}
               model={showModel} onModel={() => { setShowModel(!showModel); setShowPunctuality(false); }} zoomedOut={zoomedOut && !focus.lineId} />
           </div>
+          <MapCanvas network={networkData} vehicles={visibleVehicles} vehicleLook={focus.lineId ? "focus" : "dense"}
+            showBuses={showBuses} showTrams={showTrams} focusLine={focus.lineId ? line.data : null} picked={picked}
+            selectedVehicleId={focus.vehicleId} fit={fit} flyTo={flyTo} label={t("mapTitle")}
+            onStop={pickStop} onLine={pickLine} onVehicle={pickVehicle} onZoomedOut={setZoomedOut} />
           {showPunctuality && <Punctuality language={language} t={t} onClose={() => setShowPunctuality(false)}/>}
           {showModel && <ModelPanel language={language} t={t} onClose={() => setShowModel(false)}/>}
-          {!networkData && <div className="map-loading"><span className="loading-ring"/>{t("loading")}</div>}
+          {!networkData && !apiError && <div className="map-loading" role="status"><span className="loading-ring"/>{t("loading")}</div>}
+          {apiError && (
+            <div className="map-error" role="alert">
+              <strong>{t("networkErrorTitle")}</strong>
+              <p>{t("networkErrorBody")}</p>
+              <button type="button" className="retry-button" onClick={() => setNetworkAttempt((n) => n + 1)}>{t("retry")}</button>
+            </div>
+          )}
           <div className="map-legend" aria-label={t("legend")}>
             <span><i className="tile bus"/>{t("buses")}</span><span><i className="tile tram"/>{t("trams")}</span><span><i className="tile both"/>{t("both")}</span>
             {visibleVehicles && <span className="legend-delay">{t("legendDelay")}: <i className="ring on-time"/>{t("legendOnTime")} <i className="ring late"/>{t("legendLate")} <i className="ring early"/>{t("legendEarly")}</span>}
           </div>
         </section>
 
-        <aside className={`panel sheet-${sheet}`} aria-label={t("panelLabel")}>
+        <main className={`panel sheet-${sheet}`} aria-label={t("panelLabel")}>
           <button type="button" className="sheet-handle" onPointerDown={onHandleDown} onPointerUp={onHandleUp} onPointerCancel={() => { drag.current = null; }}
             onClick={onHandleKey} aria-label={t("sheetToggle")} aria-expanded={sheet !== "peek"} aria-controls="panel-scroll"><i/></button>
           <Stepper focus={focus} t={t} onStep={goStep} vehicleLabel={vehicle.data?.label} />
           <div className="panel-scroll" id="panel-scroll" ref={scroller}>
-            {apiError && <p className="form-error" role="status">{t("dataFallback")}</p>}
+            {apiError && <p className="form-error" role="alert">{t("dataFallback")}</p>}
             <Panel language={language} t={t} focus={focus} stop={stop} line={line} lineVehicles={lineShown} allLineVehicles={lineVehicles.data}
               lineScope={scope} onScope={setLineScope} headingCount={heading.size}
               stats={{ routes: routeCount, stops: stopCount, vehicles: vehicleCount }}
@@ -200,7 +208,7 @@ export default function App() {
               <details className="source-details"><summary>{t("sourceDetails")}</summary><small>{sourceNotices || t("sourceInfo")}</small></details>
             </footer>
           </div>
-        </aside>
+        </main>
       </div>
     </div>
   );
