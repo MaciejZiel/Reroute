@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -30,7 +31,7 @@ def horizon_masks(samples: Samples) -> list[tuple[str, np.ndarray]]:
 
 def _score(boot: ClusterBootstrap, samples: Samples, predicted: np.ndarray) -> dict:
     error = predicted - samples.y_delay
-    result = {
+    result: dict[str, Any] = {
         "mae": boot.mean(np.abs(error)),
         "rmse": boot.rmse(error),
         "bias": boot.mean(error),

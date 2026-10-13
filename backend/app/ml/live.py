@@ -43,7 +43,7 @@ def load_index(
     rows = db.execute(
         RECENT_SQL,
         {
-            "dates": sorted({trip_service_date(trip) for trip in trips if trip_service_date(trip)}),
+            "dates": sorted({day for trip in trips if (day := trip_service_date(trip))}),
             "trips": list(trips),
             "since": now - timedelta(seconds=LEADER_WINDOW_S + 60),
             "now": now,
