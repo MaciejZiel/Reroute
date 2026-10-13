@@ -7,11 +7,29 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import numpy as np
-
 from app.ml.featurize import MAX_ORIGIN_AGE_S, MAX_VEHICLE_AGE_S
 
-from . import dataset, evaluate, report, train
+MISSING_LIBRARIES = """\
+The training code needs numpy, scipy and lightgbm, which are not installed ({missing} missing).
+
+They are deliberately not project dependencies: the numpy and scipy wheels bundle LGPL/GPL
+runtime libraries, so training is done on the maintainer's machine and adding them to the
+project needs Company Management approval. Install them yourself, outside the project:
+
+    pip install numpy scipy lightgbm
+
+The server never needs them (the model is evaluated by pure Python in app/ml/ensemble.py).
+"""
+
+
+def require_libraries(*names: str) -> None:
+    """Exit with an explanation, not a traceback, when an out-of-tree library is missing."""
+    import importlib.util
+
+    missing = [name for name in names if importlib.util.find_spec(name) is None]
+    if missing:
+        print(MISSING_LIBRARIES.format(missing=", ".join(missing)), file=sys.stderr)
+        raise SystemExit(2)
 
 
 def iso(epoch: float) -> str:
@@ -50,6 +68,10 @@ def results_table(card: dict) -> str:
 
 
 def run_train(args: argparse.Namespace) -> int:
+    import numpy as np
+
+    from . import dataset, evaluate, report, train
+
     events = dataset.load_events(args.events)
     print(f"{len(events)} arrivals, {len({e.trip_id for e in events})} trips", file=sys.stderr)
     observations = dataset.Observations.load(args.observations) if args.observations else None
@@ -160,6 +182,7 @@ def main() -> int:
     frozen.add_argument("--out", type=Path, help="also write the table to this markdown file")
     args = parser.parse_args()
     if args.command == "evaluate-frozen":
+        require_libraries("numpy")
         from . import frozen as frozen_check
 
         since = frozen_check.parse_utc(args.since) if args.since else None
@@ -170,6 +193,9 @@ def main() -> int:
         if args.out:
             args.out.write_text(text, encoding="utf-8")
         return 0
+    require_libraries("numpy", "scipy", "lightgbm")
+    import numpy as np
+
     np.seterr(all="raise", under="ignore")
     return run_train(args)
 

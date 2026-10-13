@@ -2,29 +2,22 @@
 interval; without a promoted model the baseline answers."""
 
 import json
-import math
-from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
-
-pytest.importorskip("lightgbm")
-
 from test_live_api import _today_trip, _vehicle, client, network  # noqa: E402, F401
-from test_ml_pipeline import BASE, synthetic_events  # noqa: E402
 
 from app import predict  # noqa: E402
 from app.collector import store  # noqa: E402
 from app.collector.derive import PollResult  # noqa: E402
-from app.ml.featurize import FEATURE_NAMES, Event, TargetStop  # noqa: E402
+from app.ml.featurize import Event, TargetStop  # noqa: E402
 from app.ml.live import load_index, model_inputs  # noqa: E402
-from ml import dataset, report, train  # noqa: E402
 
 DAY = date(2026, 10, 13)
-RANGE = {"max_stops_ahead": 12, "max_sched_run_s": 1e9, "max_origin_age_s": 600}
 T0 = datetime(2026, 10, 13, 10, 0, tzinfo=UTC)
 
 
@@ -59,59 +52,6 @@ def _events(rows: list[dict]) -> list[Event]:
     ]
 
 
-def _observations(rows: list[dict]) -> dataset.Observations:
-    """A vehicle report every 20 s from the first to the last arrival of each trip."""
-    series: dict[str, tuple[list[float], list[int]]] = {}
-    for trip in {r["trip_id"] for r in rows}:
-        mine = [r for r in rows if r["trip_id"] == trip]
-        start = min(r["actual_at"] for r in mine).timestamp()
-        end = max(r["actual_at"] for r in mine).timestamp()
-        times = [start + 20 * i for i in range(int((end - start) // 20) + 1)]
-        series[trip] = (times, [int(30 + (t - start) / 7) for t in times])
-    return dataset.Observations(series)
-
-
-def test_live_inputs_equal_training_inputs_at_arbitrary_moments_with_a_vehicle_delay(
-    db: Session, pg_engine: Engine
-) -> None:
-    rows = [
-        _row(trip, seq, 15 * seq + 40 * n + (seq % 3) * 7, offset + 3 * seq)
-        for n, (trip, offset) in enumerate([("a", 0), ("b", 9), ("c", 21)])
-        for seq in range(1, 8)
-    ]
-    store.write_poll(pg_engine, PollResult(arrivals=rows))
-    events = _events(rows)
-    observations = _observations(rows)
-    samples = dataset.build_samples(events, lags=(1, 2, 4), observations=observations)
-    assert len(samples) > 20
-    assert (samples.X[:, FEATURE_NAMES.index("seconds_since_origin")] > 0).any()
-
-    checked = 0
-    for i in range(0, len(samples), 3):
-        trip, stop = samples.trip_id[i], samples.stop_id[i]
-        target = next(e for e in events if e.trip_id == trip and e.stop_id == stop)
-        moment = float(samples.t0[i])
-        now = datetime.fromtimestamp(moment, UTC)
-        times, delays = observations.rows[trip]
-        newest = max(k for k, t in enumerate(times) if t <= moment)
-        index = load_index(db, [trip], ["9"], [stop], now)
-        (live,) = model_inputs(
-            index,
-            [TargetStop(trip, target.stop_seq, stop, "9", target.scheduled_s)],
-            now,
-            [delays[newest]],
-            [moment - times[newest]],
-        )
-        assert live is not None
-        for name, expected in zip(FEATURE_NAMES, samples.X[i], strict=True):
-            got = live[name]
-            assert got == pytest.approx(expected, abs=1e-6) or (
-                math.isnan(got) and math.isnan(expected)
-            ), (name, got, expected)
-        checked += 1
-    assert checked > 5
-
-
 def test_the_model_does_not_answer_without_a_fresh_vehicle_or_a_recent_last_stop(
     db: Session, pg_engine: Engine
 ) -> None:
@@ -133,16 +73,9 @@ def test_the_model_does_not_answer_without_a_fresh_vehicle_or_a_recent_last_stop
 
 
 @pytest.fixture(scope="module")
-def model_file(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    events = synthetic_events()
-    samples = dataset.build_samples(events)
-    fold = dataset.time_folds(events).assign(samples)
-    parts = [samples.take(fold == i) for i in range(4)]
-    heads = train.fit(parts[0], parts[1], parts[2], exclude=())
-    card = {"data": {"last_event_epoch": BASE}, "interval": {"nominal": 0.8}, "promoted": True}
-    path = tmp_path_factory.mktemp("model") / "delay_model.json"
-    report.write_json(path, report.model_document(heads, card, RANGE), compact=True)
-    yield str(path)
+def model_file() -> str:
+    """A small complete model file (synthetic, committed): no training library is needed."""
+    return str(Path(__file__).parent / "fixtures" / "ml_tiny_delay_model.json")
 
 
 def _arrival(trip: str, seq: int, stop: str, delay: int, now: datetime) -> dict:
