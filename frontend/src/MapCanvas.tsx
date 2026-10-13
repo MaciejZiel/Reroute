@@ -1,9 +1,8 @@
 import { useEffect, useRef } from "react";
 import { AttributionControl, Map as MapLibreMap, NavigationControl, setWorkerUrl, type GeoJSONSource, type MapMouseEvent } from "maplibre-gl";
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import type { FeatureCollection, Selection, SimulationResult } from "./types";
+import type { FeatureCollection, Language, LineDetail, StopSummary } from "./types";
 import { translate } from "./i18n";
-import type { Language } from "./types";
 
 const mapStyle = {
   version: 8 as const,
@@ -21,48 +20,43 @@ const mapStyle = {
 
 setWorkerUrl(mapWorkerUrl);
 
+const MODE_COLOR = ["match", ["get", "mode"], "tram", "#ff765e", "#81dbc0"] as const;
+// Same limits as the punctuality view: early below -60 s, late above 180 s.
+const DELAY_COLOR = [
+  "case",
+  ["==", ["get", "delay_seconds"], null], "#8a968e",
+  [">", ["get", "delay_seconds"], 180], "#ff9a3c",
+  ["<", ["get", "delay_seconds"], -60], "#6a83e6",
+  "#2fd08f",
+] as const;
+
+export interface MapRequest<T> { value: T; nonce: number }
+
 interface MapCanvasProps {
   network: FeatureCollection | null;
   vehicles: FeatureCollection | null;
   language: Language;
   showBuses: boolean;
   showTrams: boolean;
-  selection: Selection | null;
-  simulation: SimulationResult | null;
-  onSelect: (selection: Selection) => void;
+  focusLine: LineDetail | null;
+  picked: StopSummary[];
+  selectedVehicleId: string | null;
+  fit: MapRequest<[[number, number], [number, number]]> | null;
+  flyTo: MapRequest<[number, number]> | null;
+  onStop: (id: string, name: string, coordinate: [number, number]) => void;
+  onLine: (routeId: string, label: string) => void;
+  onVehicle: (vehicleId: string) => void;
 }
 
-function selectionFromFeature(properties: Record<string, unknown>, coordinate: [number, number]): Selection | null {
-  if (properties.entity_type === "stop") {
-    return { type: "stop", id: String(properties.id), label: String(properties.name), coordinate };
-  }
-  if (properties.entity_type === "route") {
-    return {
-      type: "route",
-      id: String(properties.route_id),
-      label: `${String(properties.short_name)} · ${String(properties.long_name)}`,
-      coordinate,
-    };
-  }
-  return null;
-}
+const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
-export default function MapCanvas({
-  network, vehicles, language, showBuses, showTrams, selection, simulation, onSelect,
-}: MapCanvasProps) {
+export default function MapCanvas(props: MapCanvasProps) {
+  const { network, vehicles, language, showBuses, showTrams, focusLine, picked, selectedVehicleId, fit, flyTo } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const onSelectRef = useRef(onSelect);
-  const networkRef = useRef(network);
-  const vehiclesRef = useRef(vehicles);
-  const visibilityRef = useRef({ showBuses, showTrams });
-  const simulationRef = useRef(simulation);
-
-  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
-  useEffect(() => { networkRef.current = network; }, [network]);
-  useEffect(() => { vehiclesRef.current = vehicles; }, [vehicles]);
-  useEffect(() => { visibilityRef.current = { showBuses, showTrams }; }, [showBuses, showTrams]);
-  useEffect(() => { simulationRef.current = simulation; }, [simulation]);
+  const ready = useRef(false);
+  const latest = useRef(props);
+  latest.current = props;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -79,172 +73,114 @@ export default function MapCanvas({
     map.addControl(new NavigationControl({ showCompass: false }), "top-right");
     map.addControl(new AttributionControl({ compact: true }), "bottom-right");
     map.on("load", () => {
-      map.addSource("network", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-        cluster: true,
-        clusterRadius: 42,
-        clusterMaxZoom: 14,
-      });
-      map.addSource("vehicles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-      map.addSource("analysis", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("network", { type: "geojson", data: empty, cluster: true, clusterRadius: 42, clusterMaxZoom: 14 });
+      map.addSource("vehicles", { type: "geojson", data: empty });
+      map.addSource("focus", { type: "geojson", data: empty });
+      map.addSource("picked", { type: "geojson", data: empty });
       map.addLayer({
-        id: "routes",
-        type: "line",
-        source: "network",
+        id: "routes", type: "line", source: "network",
         filter: ["==", ["get", "entity_type"], "route"],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": ["match", ["get", "mode"], "tram", "#ff765e", "#81dbc0"],
-          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 14, 5],
-          "line-opacity": 0.84,
-        },
+        paint: { "line-color": MODE_COLOR as never, "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 14, 5], "line-opacity": 0.84 },
       });
       map.addLayer({
-        id: "analysis-routes",
-        type: "line",
-        source: "analysis",
+        id: "focus-line-casing", type: "line", source: "focus", filter: ["==", ["geometry-type"], "LineString"],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": ["match", ["get", "role"], "shared-line", "#45bd92", "#ff594f"],
-          "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 8],
-          "line-opacity": 0.95,
-        },
+        paint: { "line-color": "#101716", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 14, 12] },
       });
       map.addLayer({
-        id: "stop-clusters",
-        type: "circle",
-        source: "network",
-        filter: ["has", "point_count"],
-        paint: {
-          "circle-color": "#233c33",
-          "circle-radius": ["step", ["get", "point_count"], 13, 100, 17, 500, 21],
-          "circle-stroke-color": "#8cdec1",
-          "circle-stroke-width": 1.5,
-        },
+        id: "focus-line", type: "line", source: "focus", filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": MODE_COLOR as never, "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3.5, 14, 7.5] },
       });
       map.addLayer({
-        id: "stop-cluster-count",
-        type: "symbol",
-        source: "network",
-        filter: ["has", "point_count"],
-        layout: {
-          "text-field": ["get", "point_count_abbreviated"],
-          "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
-          "text-size": 10,
-        },
+        id: "stop-clusters", type: "circle", source: "network", filter: ["has", "point_count"],
+        paint: { "circle-color": "#233c33", "circle-radius": ["step", ["get", "point_count"], 13, 100, 17, 500, 21], "circle-stroke-color": "#8cdec1", "circle-stroke-width": 1.5 },
+      });
+      map.addLayer({
+        id: "stop-cluster-count", type: "symbol", source: "network", filter: ["has", "point_count"],
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"], "text-size": 10 },
         paint: { "text-color": "#e8ece5" },
       });
       map.addLayer({
-        id: "stops",
-        type: "circle",
-        source: "network",
+        id: "stops", type: "circle", source: "network",
         filter: ["all", ["==", ["get", "entity_type"], "stop"], ["!", ["has", "point_count"]]],
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2, 14, 5],
-          "circle-color": "#f3ebd7",
-          "circle-stroke-color": "#20332f",
-          "circle-stroke-width": 1.4,
-        },
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2, 14, 5], "circle-color": "#f3ebd7", "circle-stroke-color": "#20332f", "circle-stroke-width": 1.4 },
       });
       map.addLayer({
-        id: "vehicles",
-        type: "circle",
-        source: "vehicles",
+        id: "focus-stops", type: "circle", source: "focus", filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 14, 5.5], "circle-color": "#f3ebd7", "circle-stroke-color": "#101716", "circle-stroke-width": 1.6 },
+      });
+      map.addLayer({
+        id: "picked-stops", type: "circle", source: "picked",
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 7, 14, 11], "circle-color": "#ffd86b", "circle-stroke-color": "#101716", "circle-stroke-width": 2.2 },
+      });
+      map.addLayer({
+        id: "vehicles", type: "circle", source: "vehicles",
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 5, 14, 9],
-          "circle-color": ["match", ["get", "mode"], "tram", "#ff765e", "#81dbc0"],
-          "circle-stroke-color": "#172321",
-          "circle-stroke-width": 2,
+          "circle-color": MODE_COLOR as never,
+          "circle-stroke-color": DELAY_COLOR as never,
+          "circle-stroke-width": 2.6,
           "circle-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.42, 1],
           "circle-stroke-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.48, 1],
         },
       });
       map.addLayer({
-        id: "vehicle-labels",
-        type: "symbol",
-        source: "vehicles",
-        layout: {
-          "text-field": ["get", "line"],
-          "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
-          "text-size": 10,
-          "text-offset": [0, 1.25],
-          "text-allow-overlap": true,
-        },
+        id: "vehicle-labels", type: "symbol", source: "vehicles",
+        layout: { "text-field": ["get", "line"], "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"], "text-size": 10, "text-offset": [0, 1.35], "text-allow-overlap": true },
         paint: { "text-color": "#f3ebd7", "text-halo-color": "#182321", "text-halo-width": 1.2 },
       });
       map.addLayer({
-        id: "analysis-stops",
-        type: "circle",
-        source: "analysis",
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: {
-          "circle-radius": ["match", ["get", "role"], "target-stop", 9, 7],
-          "circle-color": ["match", ["get", "role"], "target-stop", "#ff594f", "#45bd92"],
-          "circle-stroke-color": "#fffaf0",
-          "circle-stroke-width": 2,
-        },
+        id: "vehicle-selected", type: "circle", source: "vehicles", filter: ["==", ["get", "id"], ""],
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 11, 14, 16], "circle-color": "rgba(255,255,255,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
       });
-      syncCollection(map, "network", networkRef.current);
-      syncCollection(map, "vehicles", vehiclesRef.current);
-      syncScenario(map, networkRef.current, simulationRef.current);
-      applyVisibility(map, visibilityRef.current);
-      map.on("click", ["stops", "routes"], (event: MapMouseEvent) => {
-        const feature = map.queryRenderedFeatures(event.point, { layers: ["stops", "routes"] })[0];
-        if (!feature) return;
-        const coordinates = (feature.geometry.type === "Point"
-          ? feature.geometry.coordinates
-          : event.lngLat.toArray()) as [number, number];
-        const properties = { ...(feature.properties ?? {}), id: feature.id };
-        const next = selectionFromFeature(properties, coordinates);
-        if (next) onSelectRef.current(next);
-      });
-      map.on("click", "stop-clusters", async (event: MapMouseEvent) => {
-        const feature = map.queryRenderedFeatures(event.point, { layers: ["stop-clusters"] })[0];
+      ready.current = true;
+      syncAll(map, latest.current);
+
+      const hit = (event: MapMouseEvent, layers: string[]) => {
+        const pad = 7;
+        return map.queryRenderedFeatures([[event.point.x - pad, event.point.y - pad], [event.point.x + pad, event.point.y + pad]], { layers: layers.filter((id) => map.getLayer(id)) });
+      };
+      map.on("click", async (event: MapMouseEvent) => {
+        const handlers = latest.current;
+        const vehicle = hit(event, ["vehicles"])[0];
+        if (vehicle) { handlers.onVehicle(String(vehicle.properties?.id)); return; }
+        const cluster = hit(event, ["stop-clusters"])[0];
         const source = map.getSource("network") as GeoJSONSource | undefined;
-        if (!feature || !source) return;
-        const clusterId = Number(feature.properties?.cluster_id);
-        const zoom = await source.getClusterExpansionZoom(clusterId);
-        if (feature.geometry.type === "Point") {
-          map.easeTo({ center: feature.geometry.coordinates as [number, number], zoom });
+        if (cluster && source) {
+          const zoom = await source.getClusterExpansionZoom(Number(cluster.properties?.cluster_id));
+          if (cluster.geometry.type === "Point") map.easeTo({ center: cluster.geometry.coordinates as [number, number], zoom });
+          return;
         }
+        const stop = hit(event, ["stops", "focus-stops"])[0];
+        if (stop && stop.geometry.type === "Point") {
+          handlers.onStop(String(stop.properties?.id ?? stop.id), String(stop.properties?.name), stop.geometry.coordinates as [number, number]);
+          return;
+        }
+        const route = hit(event, ["routes"])[0];
+        if (route) handlers.onLine(String(route.properties?.route_id), String(route.properties?.short_name));
       });
-      map.on("mouseenter", ["stops", "stop-clusters", "routes"], () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", ["stops", "stop-clusters", "routes"], () => { map.getCanvas().style.cursor = ""; });
+      const interactive = ["vehicles", "stops", "focus-stops", "stop-clusters", "routes"];
+      map.on("mousemove", (event) => { map.getCanvas().style.cursor = hit(event, interactive).length ? "pointer" : ""; });
     });
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; };
+    return () => { ready.current = false; map.remove(); mapRef.current = null; };
   }, []);
 
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) setData(map, "network", network); }, [network]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) setData(map, "vehicles", vehicles); }, [vehicles]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) syncFocus(map, focusLine); }, [focusLine]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) syncPicked(map, picked); }, [picked]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) applyFilters(map, showBuses, showTrams, selectedVehicleId); }, [showBuses, showTrams, selectedVehicleId]);
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !network || !map.isStyleLoaded()) return;
-    syncCollection(map, "network", network);
-  }, [network]);
-
+    if (map && fit) map.fitBounds(fit.value, { padding: { top: 70, bottom: 70, left: 50, right: 50 }, maxZoom: 15, duration: 800 });
+  }, [fit?.nonce]);
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !vehicles || !map.isStyleLoaded()) return;
-    syncCollection(map, "vehicles", vehicles);
-  }, [vehicles]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    syncScenario(map, network, simulation);
-  }, [network, selection, simulation]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    applyVisibility(map, { showBuses, showTrams });
-  }, [showBuses, showTrams]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !selection || !map.isStyleLoaded()) return;
-    map.easeTo({ center: selection.coordinate, duration: 700, offset: [-120, 0] });
-  }, [selection]);
+    if (map && flyTo) map.easeTo({ center: flyTo.value, zoom: Math.max(map.getZoom(), 15), duration: 700 });
+  }, [flyTo?.nonce]);
 
   return (
     <div className="map-wrap" aria-label={translate(language, "mapTitle")}>
@@ -255,7 +191,7 @@ export default function MapCanvas({
   );
 }
 
-function syncCollection(map: MapLibreMap, sourceId: string, collection: FeatureCollection | null) {
+function setData(map: MapLibreMap, sourceId: string, collection: FeatureCollection | null) {
   const source = map.getSource(sourceId) as GeoJSONSource | undefined;
   if (!source || !collection) return;
   source.setData({
@@ -269,71 +205,58 @@ function syncCollection(map: MapLibreMap, sourceId: string, collection: FeatureC
   });
 }
 
-function syncScenario(
-  map: MapLibreMap,
-  network: FeatureCollection | null,
-  simulation: SimulationResult | null,
-) {
-  const source = map.getSource("analysis") as GeoJSONSource | undefined;
+function syncFocus(map: MapLibreMap, line: LineDetail | null) {
+  const source = map.getSource("focus") as GeoJSONSource | undefined;
   if (!source) return;
-  const features: GeoJSON.Feature<GeoJSON.Geometry>[] = [];
-  if (network && simulation) {
-    const routeIds = new Map(
-      network.features
-        .filter((feature) => feature.properties.entity_type === "route")
-        .map((feature) => [String(feature.properties.route_id), feature]),
-    );
-    const stopFeatures = new Map(
-      network.features
-        .filter((feature) => feature.properties.entity_type === "stop")
-        .map((feature) => [feature.id, feature]),
-    );
-    const addRoute = (routeId: string, role: string) => {
-      const route = routeIds.get(routeId);
-      if (!route || route.geometry.type === "Point") return;
-      features.push({
-        type: "Feature",
-        id: `${role}-${routeId}`,
-        geometry: route.geometry,
-        properties: { role },
-      });
-    };
-
-    if (simulation.target_type === "route") {
-      addRoute(simulation.target_id, "disrupted-line");
-      simulation.alternative_routes.forEach((route) => addRoute(route.id, "shared-line"));
-    } else {
-      simulation.affected_routes.forEach((route) => addRoute(route.id, "disrupted-line"));
-      const targetStop = stopFeatures.get(simulation.target_id);
-      if (targetStop?.geometry.type === "Point") {
-        features.push({
-          type: "Feature",
-          id: "target-stop",
-          geometry: targetStop.geometry,
-          properties: { role: "target-stop" },
-        });
-      }
-      simulation.alternative_stops.forEach((stop) => {
-        features.push({
-          type: "Feature",
-          id: `alternative-${stop.id}`,
-          geometry: { type: "Point", coordinates: [stop.longitude, stop.latitude] },
-          properties: { role: "alternative-stop" },
-        });
-      });
-    }
+  const features: GeoJSON.Feature[] = [];
+  if (line?.shape) {
+    const geometry: GeoJSON.Geometry = line.shape.type === "LineString"
+      ? { type: "MultiLineString", coordinates: [line.shape.coordinates] }
+      : line.shape;
+    features.push({ type: "Feature", geometry, properties: { mode: line.mode } });
+    line.stops.forEach((stop) => features.push({
+      type: "Feature",
+      id: stop.id,
+      geometry: { type: "Point", coordinates: [stop.longitude, stop.latitude] },
+      properties: { id: stop.id, name: stop.name, mode: line.mode },
+    }));
   }
   source.setData({ type: "FeatureCollection", features });
+  // With a line in focus the other routes and the generic stops step back.
+  const focused = line !== null;
+  if (map.getLayer("routes")) map.setPaintProperty("routes", "line-opacity", focused ? 0.13 : 0.84);
+  for (const id of ["stops", "stop-clusters", "stop-cluster-count"]) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", focused ? "none" : "visible");
+  }
 }
 
-function applyVisibility(map: MapLibreMap, visibility: { showBuses: boolean; showTrams: boolean }) {
+function syncPicked(map: MapLibreMap, stops: StopSummary[]) {
+  const source = map.getSource("picked") as GeoJSONSource | undefined;
+  source?.setData({
+    type: "FeatureCollection",
+    features: stops.map((stop) => ({
+      type: "Feature" as const,
+      id: stop.id,
+      geometry: { type: "Point" as const, coordinates: [stop.longitude, stop.latitude] },
+      properties: { id: stop.id, name: stop.name },
+    })),
+  });
+}
+
+function applyFilters(map: MapLibreMap, showBuses: boolean, showTrams: boolean, selectedVehicleId: string | null) {
   if (!map.getLayer("routes") || !map.getLayer("vehicles")) return;
-  const modes = [
-    ...(visibility.showBuses ? ["bus"] : []),
-    ...(visibility.showTrams ? ["tram"] : []),
-  ];
-  map.setFilter("routes", ["all", ["==", ["get", "entity_type"], "route"], [
-    "in", ["get", "mode"], ["literal", modes],
-  ]]);
-  map.setFilter("vehicles", ["in", ["get", "mode"], ["literal", modes]]);
+  const modes = [...(showBuses ? ["bus"] : []), ...(showTrams ? ["tram"] : [])];
+  const byMode: never = ["in", ["get", "mode"], ["literal", modes]] as never;
+  map.setFilter("routes", ["all", ["==", ["get", "entity_type"], "route"], byMode]);
+  map.setFilter("vehicles", byMode);
+  map.setFilter("vehicle-labels", byMode);
+  map.setFilter("vehicle-selected", ["==", ["get", "id"], selectedVehicleId ?? ""]);
+}
+
+function syncAll(map: MapLibreMap, props: MapCanvasProps) {
+  setData(map, "network", props.network);
+  setData(map, "vehicles", props.vehicles);
+  syncFocus(map, props.focusLine);
+  syncPicked(map, props.picked);
+  applyFilters(map, props.showBuses, props.showTrams, props.selectedVehicleId);
 }
