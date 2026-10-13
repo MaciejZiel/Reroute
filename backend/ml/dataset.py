@@ -111,13 +111,17 @@ class Observations:
         self.rows = rows
 
     @classmethod
-    def load(cls, path: Path) -> Observations:
-        """Read the CSV written by ``ml/pull.sh`` (trip_id, observed_at, delay_s)."""
+    def load(cls, path: Path, until: float | None = None) -> Observations:
+        """Read the CSV written by ``ml/pull.sh`` (trip_id, observed_at, delay_s); with ``until``
+        (epoch seconds) only reports made up to then, as at the time the data was pulled."""
         rows: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
+                observed = datetime.fromisoformat(row["observed_at"]).timestamp()
+                if until is not None and observed > until:
+                    continue
                 times, delays = rows[row["trip_id"]]
-                times.append(datetime.fromisoformat(row["observed_at"]).timestamp())
+                times.append(observed)
                 delays.append(int(row["delay_s"]))
         return cls(dict(rows))
 

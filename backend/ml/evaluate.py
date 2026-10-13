@@ -9,12 +9,17 @@ import numpy as np
 
 from app.ml.featurize import FEATURE_NAMES
 
-from . import baselines
+from . import baselines, calibration
 from .dataset import Samples
 from .metrics import ClusterBootstrap
 
 if TYPE_CHECKING:  # the training library is only needed to fit, not to score
+    from .linear import Ridge
     from .train import Heads
+
+Quantiles = Callable[[Samples], tuple[np.ndarray, np.ndarray, np.ndarray]]
+RIDGE = "ridge regression (same features)"
+GBT = "gradient boosted trees (median)"
 
 HORIZONS = (
     (0, 120, "under 2 min"),
@@ -66,8 +71,29 @@ class NaiveInterval:
 
 
 def evaluate(
-    heads: Heads, train: Samples, calibration: Samples, test: Samples, nominal: float
+    heads: Heads,
+    train: Samples,
+    calibration_fold: Samples,
+    test: Samples,
+    nominal: float,
+    linear: Ridge | None = None,
 ) -> dict:
+    return evaluate_predictions(
+        heads.predict, heads.shift_s, train, calibration_fold, test, nominal, linear
+    )
+
+
+def evaluate_predictions(
+    predict: Quantiles,
+    shift_s: float,
+    train: Samples,
+    calibration_fold: Samples,
+    test: Samples,
+    nominal: float,
+    linear: Ridge | None = None,
+) -> dict:
+    """Score a model given as a function returning (median, lower, upper) per sample. Trained
+    heads and a model file read back by the server's evaluator both go through here."""
     boot = ClusterBootstrap(test.trip)
     historical = baselines.HistoricalMedian(train)
     damped = baselines.DampedPersistence(train)
@@ -79,13 +105,20 @@ def evaluate(
     }
     # The best baseline is chosen on the calibration fold, never on the test fold.
     val_mae = {
-        name: float(np.abs(fn(calibration) - calibration.y_delay).mean())
+        name: float(np.abs(fn(calibration_fold) - calibration_fold.y_delay).mean())
         for name, fn in candidates.items()
     }
     best = min(val_mae, key=val_mae.__getitem__)
-    median, lower, upper = heads.predict(test)
+    median, lower, upper = predict(test)
     scores = {name: _score(boot, test, fn(test)) for name, fn in candidates.items()}
-    scores["gradient boosted trees (median)"] = _score(boot, test, median)
+    scores[GBT] = _score(boot, test, median)
+    ridge_gain = None
+    if linear is not None:
+        # A model, not a baseline: reported next to the others but never the one the serving rule
+        # compares with, so adding it cannot change whether the trees are promoted.
+        ridge = linear.predict(test)
+        scores[RIDGE] = _score(boot, test, ridge)
+        ridge_gain = boot.relative_gain(np.abs(ridge - test.y_delay), np.abs(median - test.y_delay))
     best_abs = np.abs(candidates[best](test) - test.y_delay)
     gain = boot.relative_gain(best_abs, np.abs(median - test.y_delay))
     inside = ((test.y_delay >= lower) & (test.y_delay <= upper)).astype(float)
@@ -103,8 +136,18 @@ def evaluate(
             "model_mean_width_s": float((upper - lower).mean()),
             "naive_coverage": boot.mean(naive_inside),
             "naive_mean_width_s": float((n_high - n_low).mean()),
-            "conformal_shift_s": heads.shift_s,
+            "conformal_shift_s": shift_s,
         },
+        "calibration": calibration.interval_report(
+            test, lower, upper, nominal, horizon_masks(test)
+        ),
+        "calibration_window": calibration.interval_report(
+            calibration_fold,
+            *predict(calibration_fold)[1:],
+            nominal,
+            horizon_masks(calibration_fold),
+        ),
+        "gain_vs_ridge": ridge_gain,
         "promoted": bool(promoted),
         "rule": (
             f"serve the model by default only if its MAE is at least {MIN_RELATIVE_GAIN:.0%} "
