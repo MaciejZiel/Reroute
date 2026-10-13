@@ -44,7 +44,7 @@ Click a stop to see every line serving it with the next timetable departures and
 - **Delay colours.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
 - **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes.
 - **Bilingual, responsive UI** (Polish and English; on narrow screens the panel sits under the map).
-- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists; the ML model is the next step).
+- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (the LightGBM delay model is the default; when its inputs are stale the current delay persists).
 
 <p align="center">
   <img src="docs/screenshots/stop.png" width="49%" alt="Rondo Daszyńskiego station with the lines serving it and their next departures">
@@ -235,7 +235,7 @@ Training needs numpy, scipy and lightgbm, which are installed by hand, outside t
 pip install numpy scipy lightgbm        # out-of-tree: not in pyproject.toml or uv.lock
 ```
 
-> **Licence note.** These wheels bundle LGPL/GPL runtime libraries (libquadmath, libgfortran). Training is done on the maintainer's machine, nothing is distributed or installed on the server, and adding them to the project's dependencies needs Company Management approval. (numpy is also pulled in by shapely, an existing runtime dependency; that is unchanged by this feature.) `make ml-train` prints this and exits if the libraries are missing.
+> **Licence note.** These wheels bundle LGPL/GPL runtime libraries (libquadmath, libgfortran). Training is done on the maintainer's machine, nothing is distributed or installed on the server, and the training libraries are deliberately not part of the project's dependencies. (numpy is also pulled in by shapely, an existing runtime dependency; that is unchanged by this feature.) `make ml-train` prints this and exits if the libraries are missing.
 
 ```bash
 REROUTE_SSH="ssh -p 8022 user@server" make ml-pull   # or DATABASE_URL=... make ml-pull
