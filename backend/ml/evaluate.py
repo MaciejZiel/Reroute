@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -12,7 +12,9 @@ from app.ml.featurize import FEATURE_NAMES
 from . import baselines
 from .dataset import Samples
 from .metrics import ClusterBootstrap
-from .train import Heads
+
+if TYPE_CHECKING:  # the training library is only needed to fit, not to score
+    from .train import Heads
 
 HORIZONS = (
     (0, 120, "under 2 min"),
