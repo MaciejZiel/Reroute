@@ -21,17 +21,55 @@
   <img alt="React" src="https://img.shields.io/badge/React-19-087EA4?logo=react&logoColor=white">
 </p>
 
-Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival, and a small gradient-boosted model trained on that data predicts delays further down the line, with an interval and a plain-words reason (see [Delay model](#delay-model)).
+Reroute is a live map of Warsaw's trams and buses, built around one question: **is my tram or bus coming, and is it late?** Live at <https://reroute.maciejzielinski.dev>, running on a home server.
+
+- **Stops.** Click a stop (or search by name) to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay and expected time.
+- **Lines and vehicles.** Pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops.
+- **A collector underneath.** A separate process records every vehicle observation and every stop arrival it can derive, which is the data the model learns from.
 
 <p align="center">
   <a href="https://reroute.maciejzielinski.dev"><img src="docs/screenshots/line.png" width="860" alt="Tram line 24 selected from Rondo Daszyńskiego: route, stops, live vehicles and departures with delays"></a>
 </p>
 
+## The machine-learning part
+
+The feed publishes positions, not predictions, so the simplest forecast for a later stop is "the vehicle's current delay stays". Reroute also runs a small gradient-boosted tree model (LightGBM quantile regression, exported to a JSON file and evaluated by about 200 lines of pure Python, so the server needs no ML libraries) that predicts how much a delay will change between the vehicle's latest recorded stop and a stop 1 to 12 stops further along. For each upcoming stop of a selected vehicle it returns a predicted delay, an 80% range and, in the vehicle view, a one-line reason in plain words (exact TreeSHAP values, in Polish or English). Where the model must not answer (stale vehicle report, too far ahead) the baseline answers and the app says so.
+
+<p align="center">
+  <img src="docs/screenshots/vehicle-why.png" width="62%" alt="Vehicle view of tram 9: next stops with scheduled and expected times, and the line 'Why this prediction' with the likely range">
+  <img src="docs/screenshots/mobile-vehicle-why.png" width="26%" alt="The same view on a 400 px wide screen">
+</p>
+
+<p align="center"><sub>The "why" line under the next stops of a vehicle: what moved the number, and the 80% range.</sub></p>
+
+The numbers, honestly. Everything below comes from **one evening** (Tuesday 13 October 2026, 16:25 to 22:08 Warsaw time, 240,998 recorded stop arrivals), split by time: the model is scored on the last 54 minutes, which it never saw.
+
+| predictor (mean absolute error of the delay at the stop) | MAE |
+| --- | --- |
+| model: gradient-boosted trees | **40.6 s** |
+| baseline: the current delay persists | 44.4 s |
+| ridge regression on the same features | 46.0 s |
+
+- The model's error is about 4 s lower than the baseline's (roughly 9%; the training run recorded 8.7%, the table above comes from the rebuilt folds described in the model card): a small gain on this window, largest for the nearest stops (about 21% for stops under 2 minutes of scheduled time away), and not shown to hold on any other evening.
+- The ridge row is a rough linear reference, not a like-for-like contest: it is fitted with squared loss and its penalty ended at the edge of the grid searched (0.1), while the trees minimise a median loss and are scored by MAE.
+- The 80% range contained 79.9% of the arrivals in the 54 minutes right after the window that set its width (the calibration window of the same evening). That is a check on one following stretch of one evening, not a claim that the range is calibrated in general.
+- The confidence intervals in the model card below come from a bootstrap that resamples trips. Trips of one line in the same stretch of the evening are not independent, so those intervals are too narrow; the code now resamples line-and-15-minute clusters, and the stored figures will be recomputed with it. Read the intervals as optimistic.
+
+The app shows the same summary in the **About the model** panel, in English and Polish, also served at `/api/model`:
+
+<p align="center">
+  <img src="docs/screenshots/model-panel.png" width="860" alt="The About the model panel: training window, error of the model against the baseline and a simple linear model, and how often the 80% range held at each distance to the stop">
+</p>
+
+<p align="center"><sub>Vehicle screenshots are of the live deployment, taken with <code>playwright-cli</code> on 13 October 2026; the panel screenshot is of this repository's build with the stored model card.</sub></p>
+
+The full model card, with what it knows and does not know, is [below](#delay-model). Weekend, morning-rush, holiday and winter behaviour are untested.
+
 ## Status and self-hosting
 
-- **Live now:** the map, departures with delays estimated from live positions, line and vehicle views and the per-line punctuality view, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
+- **Live now:** the map, departures with delays estimated from live positions, line and vehicle views, the per-line punctuality view and the delay model, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
 - **Self-hosted:** the public instance runs on a home server, not on a cloud platform.
-- **Delay model:** a first model exists and is served by default because it beat the baselines on held-out future data, but it was trained on a single evening of data (see the [model card](#delay-model)). Where the model cannot answer (a trip with no recorded stop yet) the API falls back to "the current delay persists".
+- **Delay model:** served by default because it beat the baselines on held-out data from its single evening. Where it cannot answer (a trip with no recorded stop yet, a stale report) the API falls back to "the current delay persists".
 
 ## Features
 
@@ -186,7 +224,7 @@ The vehicle view shows the same reason as one quiet line under the next stops, n
 
 **Features.** Stops ahead and scheduled running time to the target, and how long ago the last stop was recorded; the vehicle's own latest reported delay, how old that report is, and the delay at its last recorded stop and how it changed; the delay trend over 10 min; the mean delay of other vehicles on the line (15 min) and at the target stop (30 min); the delay of the vehicle ahead on the same line at the target stop and its scheduled headway; tram or bus. Hour, weekday and stop number are implemented but switched off (`--calendar-features`): with one evening they can only memorise the clock.
 
-**Results on the held-out later window** (MAE and RMSE in seconds; the intervals come from a bootstrap that resamples whole trips, because arrivals of one trip are strongly dependent; "MAE under 2 min" etc. bin by the scheduled time from the last stop to the target):
+**Results on the held-out later window** (MAE and RMSE in seconds; the intervals come from a bootstrap that resamples whole trips, which is too narrow because trips of one line in the same stretch of the evening are dependent (see the caveats below); "MAE under 2 min" etc. bin by the scheduled time from the last stop to the target):
 
 | predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -199,11 +237,11 @@ The vehicle view shows the same reason as one quiet line under the next stops, n
 
 80% interval on the test fold: model coverage 79.9% (79.2% to 80.6%), mean width 132 s; persistence plus empirical residual quantiles: coverage 87.8% (87.2% to 88.4%), mean width 198 s.
 
-The ridge row is a plain linear regression on the same 14 features and the same target, fitted offline on the same training window and scored by the same code (`backend/ml/linear.py`); it is not served. It is worse than persistence (46.0 s against 44.4 s), so a linear model does not capture what the trees add: the trees' MAE is 11.7% lower than ridge (bootstrap interval 10.6% to 12.9%) and about 9% lower than persistence. Ridge only wins on bias (+0.5 s) and is weak for the nearest stops, where persistence is hard to beat.
+The ridge row is a plain linear regression on the same 14 features and the same target, fitted offline on the same training window and scored by the same code (`backend/ml/linear.py`); it is not served. It is worse than persistence (46.0 s against 44.4 s) and the trees' MAE is 11.7% lower than ridge (bootstrap interval 10.6% to 12.9%, trip-resampled). That comparison is not like-for-like: ridge minimises squared error and its penalty (0.1) is the smallest value on the grid searched, whereas the trees minimise a median loss and are scored by MAE, so a linear model fitted for the median might do better than 46.0 s. Treat it as a rough linear reference, not as proof that a linear model cannot match the trees. Ridge wins on bias (+0.5 s) and is weak for the nearest stops, where persistence is hard to beat.
 
 The best baseline, chosen on the calibration window and not on the test window, is the existing persistence predictor. The model's MAE is **8.7% lower** (bootstrap interval 7.3% to 10.1%), RMSE about 13% lower. By horizon the relative gain is 21%, 10%, 8% and 7%: largest for the nearest stops, and the nearest bin is also the one with the fewest samples. The 80% interval covered 79.9% of test arrivals; the persistence-plus-empirical-quantiles interval covers more because it is wider (198 s against 132 s).
 
-How far to trust these numbers: the bootstrap interval is sampling uncertainty inside this one window. It treats trips as independent, so it ignores shocks that hit the whole network at once, and it says nothing about other days. The test window was also looked at more than once while the pipeline was being built (features, the vehicle-delay input and the serving rules were changed after earlier evaluations), so it is not a pristine one-shot holdout. The rule for serving the model by default (at least 5% lower MAE than the best baseline with the bootstrap interval above zero) was written into the code at the start, but the history cannot prove that it was not adjusted; read it as a sanity gate for one window, not as evidence the model generalises. It passed, so the model is the default; had it failed, the file would still be trained and reported but `get_predictor()` would keep the baseline (the card inside the model file says `promoted: false`). The historical-median row is degenerate with one evening: the test hours hardly occur in the training window, so it collapses to a near-global median.
+How far to trust these numbers: the bootstrap interval is sampling uncertainty inside this one window. The stored intervals resample whole trips, which treats trips as independent although trips of one line in the same stretch of the evening share their recent delays and network-wide conditions, so they are too narrow (the training code now resamples clusters of one line and one 15-minute block, and the stored intervals will be recomputed with it). Even clusters ignore shocks that hit the whole network at once, and none of it says anything about other days. The test window was also looked at more than once while the pipeline was being built (features, the vehicle-delay input and the serving rules were changed after earlier evaluations), so it is not a pristine one-shot holdout. The rule for serving the model by default (at least 5% lower MAE than the best baseline with the bootstrap interval above zero) was written into the code at the start, but the history cannot prove that it was not adjusted; read it as a sanity gate for one window, not as evidence the model generalises. It passed, so the model is the default; had it failed, the file would still be trained and reported but `get_predictor()` would keep the baseline (the card inside the model file says `promoted: false`). The historical-median row is degenerate with one evening: the test hours hardly occur in the training window, so it collapses to a near-global median.
 
 **Frozen-model check.** `make ml-frozen` scores the committed model file unchanged (read by the same pure-Python evaluator the server uses, nothing refitted) on arrivals after its training window. Run on 2026-10-13 right after this model was built, the only later data was 7 minutes of the same evening (7,458 samples, 651 trips): MAE 28.0 s against 29.7 s for persistence, 5.8% lower (bootstrap interval 3.1% to 8.6%), 80% interval coverage 80.8%. The margin held on those minutes, with a smaller sample and a narrower margin. That is a sanity check, not evidence about other days; the table is in [docs/ml/frozen_check.md](docs/ml/frozen_check.md). The command is there to be repeated whenever the collector has gathered a new day, before anyone retrains.
 
@@ -211,7 +249,7 @@ How far to trust these numbers: the bootstrap interval is sampling uncertainty i
   <img src="docs/ml/mae_by_horizon.svg" width="720" alt="MAE by horizon, model against persistence">
 </p>
 
-**Does the 80% interval mean 80%?** Checked on the held-out window (so not on the data that set the interval width), per scheduled time to the stop and per hour of the Warsaw clock. A bin with fewer than 200 predictions is not shown; every share has a bootstrap interval that resamples whole trips.
+**Did the 80% range hold?** Checked on the held-out window, which follows the calibration window that set the range's width (so not on the data that set it), per scheduled time to the stop and per hour of the Warsaw clock. This is one following stretch of one evening, not evidence of calibration in general. A bin with fewer than 200 predictions is not shown (new runs also require 30 trips per bin); every share has a bootstrap interval that resamples whole trips, which is too narrow as described above.
 
 | scheduled time to the stop | predictions | coverage (95% interval) | missed below / above | mean width |
 | --- | --- | --- | --- | --- |
@@ -220,19 +258,19 @@ How far to trust these numbers: the bootstrap interval is sampling uncertainty i
 | 5 to 10 min | 55,946 | 80.4% (79.5% to 81.3%) | 10.1% / 9.5% | 147 s |
 | 10 min or more | 34,764 | 80.9% (79.4% to 82.2%) | 10.9% / 8.2% | 204 s |
 
-By hour, the test window covers only 21:00 (79.9%, 151,443 predictions) and 22:00 (79.8%, 13,282); the calibration window's 20:00 and 21:00 are 80.3% and 79.6%. So the interval is close to 80% at every distance (the nearest stops are about 1 point low) and misses about equally on both sides, except for the 22:00 hour where it is early more often (12.9% against 7.3%, on 729 trips). Only three evening hours exist in the data, so this says nothing about the morning, midday or night. The full tables are in [docs/ml/results.md](docs/ml/results.md); the two charts below show the same.
+By hour, the test window covers only 21:00 (79.9%, 151,443 predictions) and 22:00 (79.8%, 13,282); the calibration window's 20:00 and 21:00 are 80.3% and 79.6%. So the interval is close to 80% at every distance (the nearest stops are about 1 point low) and misses about equally on both sides, except for the 22:00 hour where it is early more often (12.9% against 7.3%, on 729 trips). The data spans 16:25 to 22:08, and only the hours 20, 21 and 22 carry calibration checks (the test fold is the 54 minutes from 21:14 to 22:08, so the 22:00 bin is only about 8 minutes of it). This says nothing about the morning, midday or night. The full tables are in [docs/ml/results.md](docs/ml/results.md); the two charts below show the same.
 
 <p align="center">
   <img src="docs/ml/calibration_by_horizon.svg" width="640" alt="Interval coverage by scheduled time to the stop">
   <img src="docs/ml/calibration_by_hour.svg" width="640" alt="Interval coverage by hour of the day">
 </p>
 
-The calibration and ridge figures were added to the stored model without retraining (`make ml-credibility`): the folds were rebuilt from the same recorded data and differ from the original run by 0.1% of samples (for example 164,725 test samples against 164,593), because a few arrivals were derived slightly differently on rebuild; the trees' MAE moved from 40.62 s to 40.60 s. The trees, the version and the decision to serve them are unchanged.
+The calibration and ridge figures were added to the stored model without retraining (`make ml-credibility`). The folds were rebuilt from the recorded data without the original pull time (it was not recorded then), so they differ from the original run by 0.1% of samples (for example 164,725 test samples against 164,593) even though the arrival count matched (240,998): most likely the vehicle reports counted as known at each moment, which the pull time bounds. The blocks refreshed that way (the ridge row, the interval figures, both calibration tables, and the tree MAE of 40.60 s that replaced 40.62 s) therefore come from the rebuilt folds, not from the exact training folds. The trees, the version and the decision to serve them are unchanged. Models trained from now on record the pull time in their card, and `make ml-credibility` uses it, so the folds can be rebuilt exactly; for the stored model, pass `KNOWN_UNTIL=<UTC time of the pull>` to repeat it.
 
 ### What the model knows and does not know
 
 Knows, with figures from the held-out window:
-- How a delay tends to evolve over the next 1 to 12 stops of a trip on a weekday evening, given the vehicle's latest delay, how other vehicles on the line and at the stop are doing, and the vehicle ahead. It beats "the delay persists" by about 4 s of MAE (44.4 s to 40.6 s, 8.7% in the training run), most for the nearest stops (about 20% for the stop that follows).
+- How a delay tends to evolve over the next 1 to 12 stops of a trip on a weekday evening, given the vehicle's latest delay, how other vehicles on the line and at the stop are doing, and the vehicle ahead. It beats "the delay persists" by about 4 s of MAE (44.4 s to 40.6 s, 8.7% in the training run), most for the nearest stops (about 21% for stops under 2 minutes of scheduled time away).
 - How uncertain it is: the 80% interval covered 79.9% overall and 78.8% to 80.9% at every distance.
 
 Does not know:
@@ -257,8 +295,8 @@ The same summary is served at `/api/model` and shown in the app under "About the
 Read the partial dependence with care: the strongest features are correlated (stops ahead and scheduled running time say nearly the same), so their individual curves share one effect. It shows what the model learned, not causes.
 
 **Limitations, plainly.**
-- One evening. The margin could be different, or vanish, on a weekend, in the morning rush, in winter or on a day with a disruption. The test window is the last 49 minutes of the evening, so there is some distribution shift inside the evening, but nothing resembling a different day.
-- The gain is modest: about 3.9 s of MAE on a 44.5 s baseline. Persistence is a strong baseline for a delay that changes slowly, and it is the thing to beat.
+- One evening. The margin could be different, or vanish, on a weekend, in the morning rush, in winter or on a day with a disruption. The test window is the last 54 minutes of the evening, so there is some distribution shift inside the evening, but nothing resembling a different day.
+- The gain is modest: about 3.8 s of MAE on a 44.4 s baseline. Persistence is a strong baseline for a delay that changes slowly, and it is the thing to beat.
 - Delays are derived (interpolated) and the model is evaluated against these derived times, not against a ground-truth feed; the labels and the vehicle-reported delay come from the same pipeline.
 - Report age: training and serving use the same cap (120 s) and the same random-moment sampling, so there is no designed mismatch, but the age distribution was measured on one evening and the collector's polling (20 s) adds up to that much to a report's age in live use. Held answers (up to 60 s) were not evaluated separately; they repeat an answer of the same model.
 - No horizon beyond 12 stops (the baseline answers there), no holiday or weather information, one fixed 80% interval calibrated overall, not per line or per horizon.
@@ -278,6 +316,7 @@ REROUTE_SSH="ssh -p 8022 user@server" make ml-pull   # or DATABASE_URL=... make 
 make ml-train                           # writes backend/models/delay_model.json and docs/ml/*
 make ml-test                            # all ML tests; the ones that need the libraries skip without them
 make ml-frozen                          # score the committed model, unchanged, on later data
+make ml-credibility                     # add ridge and interval calibration to the card (exact folds)
 make ml-fixtures                        # regenerate the golden test fixtures (needs the libraries)
 ```
 
