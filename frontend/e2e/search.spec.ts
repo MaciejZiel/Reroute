@@ -76,4 +76,15 @@ for (const language of LANGUAGES) {
     await expect(note).toContainText(language === "pl" ? "Prognoza na żywo wstrzymana" : "Live prediction paused");
     await expect(page.locator(".why-note").filter({ hasText: "Rondo ONZ" })).toHaveCount(0);
   });
+
+  test(`a baseline answer without model inputs is labelled with a calm note (${language})`, async ({ page }) => {
+    await page.addInitScript((lang) => localStorage.setItem("reroute-language", lang), language);
+    await mockApi(page, () => vehicleDetail({ model_status: "no_inputs", why: null }));
+    await page.goto("/");
+    await openVehicle(page);
+
+    const note = page.locator(".why-paused");
+    await expect(note).toBeVisible();
+    await expect(note).toContainText(language === "pl" ? "Brak prognozy modelu" : "No model prediction");
+  });
 }
