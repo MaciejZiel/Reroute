@@ -85,8 +85,8 @@ needed ~255 B/row; the measured slim row is ~146 B/row including the primary key
   index: a `(trip_id, observed_at)` index cost as much as the rows themselves.
 - Daily range partitions created on demand by the collector; **retention 7 days by default**
   (`OBSERVATION_RETENTION_DAYS`), enforced by `DROP TABLE` of whole partitions.
-- Measured on the real feed: ~3,700 new observations a minute, ~5.3M rows and ~0.8 GB a day,
-  so 7 days is ~5.5 GB.
+- Measured on the real feed: ~4,500 new observations a minute (live, 24 min sample), ~6.5M rows and ~0.95 GB a day,
+  so 7 days is ~6.5 GB.
 
 ### 3.3 `stop_arrival_events` (new, derived, monthly partitions)
 

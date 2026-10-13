@@ -158,7 +158,7 @@ Measured on the real Warsaw timetable (314 lines, 7,241 stops, 282,430 trips ove
 | all vehicles | 70 ms | 139 ms |
 | vehicle detail | 14 ms | 21 ms |
 
-Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, service_date)` and the trip primary key, and read the departure time with `split_part` in SQL. Collector: ~86 MiB RSS, 0.14 s per poll; observations ~146 B/row (~0.8 GB a day), arrival events ~170 B/row (~220 MB a day).
+Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, service_date)` and the trip primary key, and read the departure time with `split_part` in SQL. Collector: ~86 MiB RSS, 0.14 s per poll; observations ~146 B/row (~6.5M rows, ~0.95 GB a day measured live), arrival events ~170 B/row (~220 MB a day).
 
 ## Key technical decisions
 
