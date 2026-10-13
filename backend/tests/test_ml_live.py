@@ -24,6 +24,7 @@ from app.ml.live import load_index, model_inputs  # noqa: E402
 from ml import dataset, report, train  # noqa: E402
 
 DAY = date(2026, 10, 13)
+RANGE = {"max_stops_ahead": 12, "max_sched_run_s": 1e9, "max_origin_age_s": 600}
 T0 = datetime(2026, 10, 13, 10, 0, tzinfo=UTC)
 
 
@@ -58,7 +59,19 @@ def _events(rows: list[dict]) -> list[Event]:
     ]
 
 
-def test_live_inputs_equal_training_inputs_at_every_prediction_moment(
+def _observations(rows: list[dict]) -> dataset.Observations:
+    """A vehicle report every 20 s from the first to the last arrival of each trip."""
+    series: dict[str, tuple[list[float], list[int]]] = {}
+    for trip in {r["trip_id"] for r in rows}:
+        mine = [r for r in rows if r["trip_id"] == trip]
+        start = min(r["actual_at"] for r in mine).timestamp()
+        end = max(r["actual_at"] for r in mine).timestamp()
+        times = [start + 20 * i for i in range(int((end - start) // 20) + 1)]
+        series[trip] = (times, [int(30 + (t - start) / 7) for t in times])
+    return dataset.Observations(series)
+
+
+def test_live_inputs_equal_training_inputs_at_arbitrary_moments_with_a_vehicle_delay(
     db: Session, pg_engine: Engine
 ) -> None:
     rows = [
@@ -68,19 +81,26 @@ def test_live_inputs_equal_training_inputs_at_every_prediction_moment(
     ]
     store.write_poll(pg_engine, PollResult(arrivals=rows))
     events = _events(rows)
-    samples = dataset.build_samples(events, lags=(1, 2, 4))
+    observations = _observations(rows)
+    samples = dataset.build_samples(events, lags=(1, 2, 4), observations=observations)
     assert len(samples) > 20
+    assert (samples.X[:, FEATURE_NAMES.index("seconds_since_origin")] > 0).any()
 
     checked = 0
     for i in range(0, len(samples), 3):
         trip, stop = samples.trip_id[i], samples.stop_id[i]
         target = next(e for e in events if e.trip_id == trip and e.stop_id == stop)
-        now = datetime.fromtimestamp(samples.t0[i], UTC)
+        moment = float(samples.t0[i])
+        now = datetime.fromtimestamp(moment, UTC)
+        times, delays = observations.rows[trip]
+        newest = max(k for k, t in enumerate(times) if t <= moment)
         index = load_index(db, [trip], ["9"], [stop], now)
         (live,) = model_inputs(
             index,
             [TargetStop(trip, target.stop_seq, stop, "9", target.scheduled_s)],
             now,
+            [delays[newest]],
+            [moment - times[newest]],
         )
         assert live is not None
         for name, expected in zip(FEATURE_NAMES, samples.X[i], strict=True):
@@ -92,11 +112,24 @@ def test_live_inputs_equal_training_inputs_at_every_prediction_moment(
     assert checked > 5
 
 
-def test_a_trip_without_recorded_stops_has_no_model_inputs(db: Session) -> None:
-    now = T0
-    index = load_index(db, ["2026-10-13:9:X:none"], ["9"], ["s3"], now)
-    target = TargetStop("2026-10-13:9:X:none", 3, "s3", "9", now.timestamp())
-    assert model_inputs(index, [target], now) == [None]
+def test_the_model_does_not_answer_without_a_fresh_vehicle_or_a_recent_last_stop(
+    db: Session, pg_engine: Engine
+) -> None:
+    rows = [_row("a", seq, 60, 3 * seq) for seq in range(1, 6)]
+    store.write_poll(pg_engine, PollResult(arrivals=rows))
+    last_known = max(r["actual_at"] for r in rows) + timedelta(seconds=30)
+    trip = rows[0]["trip_id"]
+    target = TargetStop(trip, 9, "s9", "9", (T0 + timedelta(minutes=40)).timestamp())
+
+    def inputs(now: datetime, delay: float | None, age: float | None):
+        index = load_index(db, [trip], ["9"], ["s9"], now)
+        return model_inputs(index, [target], now, [delay], [age])[0]
+
+    assert inputs(last_known + timedelta(seconds=20), 60, 5) is not None
+    assert inputs(last_known + timedelta(seconds=20), None, None) is None  # no live vehicle
+    assert inputs(last_known + timedelta(seconds=20), 60, 120) is None  # vehicle report too old
+    # the 50-minute-old trip of the review: the last recorded stop is far too old
+    assert inputs(last_known + timedelta(minutes=50), 60, 5) is None
 
 
 @pytest.fixture(scope="module")
@@ -108,7 +141,7 @@ def model_file(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     heads = train.fit(parts[0], parts[1], parts[2], exclude=())
     card = {"data": {"last_event_epoch": BASE}, "interval": {"nominal": 0.8}, "promoted": True}
     path = tmp_path_factory.mktemp("model") / "delay_model.json"
-    report.write_json(path, report.model_document(heads, card), compact=True)
+    report.write_json(path, report.model_document(heads, card, RANGE), compact=True)
     yield str(path)
 
 
@@ -205,3 +238,93 @@ def test_the_arrival_time_index_exists(pg_engine: Engine) -> None:
             )
         ).scalar()
     assert found and "brin" in found.lower()
+
+
+def test_a_trip_last_recorded_long_ago_with_no_vehicle_stays_scheduled_not_live(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    trip = _today_trip(network, now, 8, "mlold")
+    old = _arrival(trip, 1, "100101", 300, now - timedelta(minutes=50))
+    store.write_poll(pg_engine, PollResult(arrivals=[old]))  # recorded 50 minutes ago, 5 min late
+
+    body = client.get("/api/predictions", params={"trip_id": trip}).json()
+    board = client.get("/api/stops/100101/departures").json()
+
+    assert body["model"]["kind"] == "model"
+    assert {p["basis"] for p in body["predictions"]} == {"scheduled"}
+    assert all(p["predicted_delay_s"] == 0 and p["why"] is None for p in body["predictions"])
+    assert all(p["lower_delay_s"] is None for p in body["predictions"])
+    departures = [d for line in board["lines"] for d in line["departures"] if d["trip_id"] == trip]
+    assert departures and not any(d["live"] for d in departures)
+
+
+def test_a_vehicle_with_a_stale_last_stop_gets_the_baseline_answer(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    trip = _today_trip(network, now, -1, "mlstale")
+    old = _arrival(trip, 1, "100101", 300, now - timedelta(minutes=50))
+    store.write_poll(pg_engine, PollResult(arrivals=[old]))
+    store.upsert_latest(pg_engine, [_vehicle(trip, 77, 2, now)])
+
+    body = client.get("/api/predictions", params={"trip_id": trip}).json()
+
+    for item in body["predictions"]:
+        assert item["predicted_delay_s"] == 77 and item["basis"] == "live_delay"
+        assert item["lower_delay_s"] is None and item["why"] is None  # plain persistence
+
+
+def test_the_model_stays_silent_beyond_the_stops_it_was_trained_for(model_file: str) -> None:
+    from app.features import FeatureRow
+    from app.ml.model import DelayModel, ModelPredictor
+
+    predictor = ModelPredictor(DelayModel.load(model_file))
+    base = {name: 0.0 for name in predictor.model.feature_names}
+    base["origin_delay_s"] = base["vehicle_delay_s"] = 100.0
+
+    def row(stops_ahead: float) -> FeatureRow:
+        inputs = {**base, "stops_ahead": stops_ahead, "sched_run_s": 60 * stops_ahead}
+        return FeatureRow(
+            "t", "9", "s", 3, datetime.now(UTC), 0, 100, None, None, 12, 1, None, 0, inputs
+        )
+
+    near, far = predictor.predict([row(12), row(13)])
+
+    assert near.lower_delay_s is not None
+    assert far.lower_delay_s is None and far.predicted_delay_s == 100  # persistence, no interval
+
+
+def test_a_model_file_with_unknown_features_or_without_a_range_is_refused(
+    model_file: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ml.model import DelayModel
+
+    document = json.loads(open(model_file).read())
+    document["feature_names"][0] = "weather_index"
+    path = tmp_path / "unknown.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="cannot compute"):
+        DelayModel.load(path)
+
+    # PREDICTOR=model with a broken file serves the baseline instead of failing requests.
+    monkeypatch.setenv("DELAY_MODEL_FILE", str(path))
+    monkeypatch.setenv("PREDICTOR", "model")
+    assert predict.get_predictor().kind == "baseline"
+
+    document = json.loads(open(model_file).read())
+    del document["serving_range"]
+    model = DelayModel(document)
+    assert not model.in_range({"stops_ahead": 1.0})

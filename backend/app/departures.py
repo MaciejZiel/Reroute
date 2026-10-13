@@ -176,6 +176,10 @@ def upcoming(
     ]
 
 
+def _age(vehicle: LiveVehicle | None, now: datetime) -> float | None:
+    return (now - vehicle.observed_at).total_seconds() if vehicle else None
+
+
 def _predict(
     db: Session, candidates: list[Candidate], lines: dict[str, str], now: datetime
 ) -> None:
@@ -192,6 +196,7 @@ def _predict(
             vehicle_id=c.vehicle.vehicle_id if c.vehicle else None,
             current_delay_s=c.vehicle.delay_s if c.vehicle and c.vehicle.has_delay else None,
             next_stop_seq=c.vehicle.next_stop_seq if c.vehicle else None,
+            vehicle_age_s=_age(c.vehicle, now),
         )
         for c in candidates
     ]

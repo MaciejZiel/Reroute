@@ -15,6 +15,8 @@ import numpy as np
 
 from app.ml.featurize import (
     FEATURE_NAMES,
+    MAX_ORIGIN_AGE_S,
+    MAX_VEHICLE_AGE_S,
     Event,
     EventIndex,
     TargetStop,
@@ -103,7 +105,7 @@ class Samples:
 class Observations:
     """Delays the vehicles themselves reported, to look up the latest one at a moment in time."""
 
-    MAX_AGE_S = 60.0
+    MAX_AGE_S = MAX_VEHICLE_AGE_S
 
     def __init__(self, rows: dict[str, tuple[list[float], list[int]]]) -> None:
         self.rows = rows
@@ -121,59 +123,87 @@ class Observations:
 
     def latest(self, trip_id: str, moment: float) -> float:
         """Delay of the newest observation of the trip at or before ``moment`` (NaN if none is
-        less than a minute old)."""
+        fresh enough to be served live)."""
         series = self.rows.get(trip_id)
         if series is None:
             return math.nan
         times, delays = series
-        i = bisect_right(times, moment + 1.0) - 1
+        i = bisect_right(times, moment) - 1
         if i < 0 or moment - times[i] > self.MAX_AGE_S:
             return math.nan
         return float(delays[i])
+
+
+MOMENT_STRIDE = 3  # one in three observations of a trip is a prediction moment (about 60 s)
+JITTER_S = 20.0  # a request arrives at a random time after the latest poll
+
+
+def _moments(index: EventIndex, trip_id: str, observations: Observations | None, rng):
+    """Moments at which a prediction for this trip is simulated.
+
+    With observations: spread over the trip's life like live requests (each sampled observation
+    plus a random delay of up to one polling interval). Without: the instant each arrival became
+    known."""
+    if observations is None:
+        return sorted({event.known_s for event in index.by_trip[trip_id]})
+    times = observations.rows.get(trip_id, ([], []))[0][::MOMENT_STRIDE]
+    return [t + float(rng.uniform(0, JITTER_S)) for t in times]
 
 
 def build_samples(
     events: Sequence[Event],
     lags: Sequence[int] = DEFAULT_LAGS,
     observations: Observations | None = None,
+    seed: int = 1,
 ) -> Samples:
-    """Simulate a prediction at the moment each arrival became known.
+    """Simulate predictions the way the server makes them.
 
-    For every recorded arrival (the origin) whose trip has no later arrival known yet, each
-    target stop ``lag`` stops ahead that has not been reached yet becomes a sample. Features see
-    only arrivals known at that moment.
+    At each moment the origin is the newest arrival of the trip known by then. Moments where the
+    server would not use the model (origin older than ``MAX_ORIGIN_AGE_S``, or, when observations
+    are given, no vehicle delay fresher than ``MAX_VEHICLE_AGE_S``) are skipped. Each target stop
+    ``lag`` stops after the origin that has not been reached yet becomes a sample. Features see
+    only arrivals known at the moment.
     """
     index = EventIndex(events)
     wanted = set(lags)
-    rows: list[list[float]] = []
+    rng = np.random.default_rng(seed)
+    blocks: list[np.ndarray] = []
     y, t0s, target_times, trips, lag_col = [], [], [], [], []
     trip_ids, lines, stops = [], [], []
     trip_numbers: dict[str, int] = {}
     for trip_id, trip_events in index.by_trip.items():
-        for origin in trip_events:
-            t0 = origin.known_s
-            known = known_trip_events(index, trip_id, t0)
-            if known[-1] is not origin:
-                continue  # a later stop was interpolated from the same fix: not the latest origin
+        rows: list[list[float]] = []
+        for moment in _moments(index, trip_id, observations, rng):
+            known = known_trip_events(index, trip_id, moment)
+            if not known:
+                continue
+            origin = known[-1]
+            if moment - origin.known_s > MAX_ORIGIN_AGE_S:
+                continue
+            live = observations.latest(trip_id, moment) if observations else math.nan
+            if observations is not None and math.isnan(live):
+                continue
             for target in trip_events:
                 lag = target.stop_seq - origin.stop_seq
-                if lag not in wanted or target.actual_s <= t0:
+                if lag not in wanted or target.actual_s <= moment:
                     continue
                 spec = TargetStop(
                     trip_id, target.stop_seq, target.stop_id, target.line, target.scheduled_s
                 )
-                live = observations.latest(trip_id, t0) if observations else math.nan
-                rows.append(feature_vector(index, spec, origin, t0, known, live))
+                rows.append(feature_vector(index, spec, origin, moment, known, live))
                 y.append(target.delay_s)
-                t0s.append(t0)
+                t0s.append(moment)
                 target_times.append(target.actual_s)
                 trips.append(trip_numbers.setdefault(trip_id, len(trip_numbers)))
                 lag_col.append(lag)
                 trip_ids.append(trip_id)
                 lines.append(target.line)
                 stops.append(target.stop_id)
+        if rows:
+            blocks.append(np.array(rows, dtype=np.float64))
+    width = len(FEATURE_NAMES)
     return Samples(
-        X=np.array(rows, dtype=np.float64).reshape(-1, len(FEATURE_NAMES)),
+        X=np.concatenate(blocks) if blocks else np.empty((0, width)),
         y_delay=np.array(y, dtype=np.float64),
         t0=np.array(t0s),
         target_s=np.array(target_times),

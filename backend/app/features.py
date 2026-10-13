@@ -59,6 +59,8 @@ class Target:
     vehicle_id: str | None
     current_delay_s: int | None
     next_stop_seq: int | None
+    # Seconds since the vehicle's last report; the model is not used with an old one.
+    vehicle_age_s: float | None = None
 
 
 def slope_per_minute(points: Sequence[tuple[datetime, int]]) -> float | None:
@@ -139,7 +141,15 @@ def _with_model_inputs(
     return [
         replace(row, model_inputs=inputs)
         for row, inputs in zip(
-            rows, model_inputs(index, specs, now, [t.current_delay_s for t in targets]), strict=True
+            rows,
+            model_inputs(
+                index,
+                specs,
+                now,
+                [t.current_delay_s for t in targets],
+                [t.vehicle_age_s for t in targets],
+            ),
+            strict=True,
         )
     ]
 

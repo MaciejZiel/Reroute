@@ -352,6 +352,7 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                     vehicle_id=vehicle.vehicle_id,
                     current_delay_s=vehicle.delay_s if vehicle.has_delay else None,
                     next_stop_seq=vehicle.next_stop_seq,
+                    vehicle_age_s=(now - vehicle.observed_at).total_seconds(),
                 )
                 for stop in upcoming_stops
             ]
@@ -460,6 +461,7 @@ def predictions(
                 vehicle_id=vehicles.vehicle_id if vehicles else None,
                 current_delay_s=vehicles.delay_s if vehicles and vehicles.has_delay else None,
                 next_stop_seq=vehicles.next_stop_seq if vehicles else None,
+                vehicle_age_s=(now - vehicles.observed_at).total_seconds() if vehicles else None,
             )
             for stop in stops
         ]
