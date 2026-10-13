@@ -29,7 +29,8 @@ class Prediction:
     explanation: Explanation | None = None
     # Only set by a model predictor: "model", "held" (the last model answer, kept for a minute),
     # "paused" (the baseline answers because the model must not, see pause_reason) or
-    # "out_of_range" (further than the model was trained for).
+    # "out_of_range" (further than the model was trained for) or "no_inputs" (the baseline
+    # answers because the model's features could not be built and no pause reason applies).
     model_status: str | None = None
     pause_reason: str | None = None
 

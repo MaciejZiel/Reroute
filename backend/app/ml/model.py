@@ -167,6 +167,8 @@ class ModelPredictor:
                 # which the app itself stops trusting a vehicle's delay).
                 result.append(held)
             else:
-                status = "paused" if row.model_pause else None
+                # No reason to pause was given, yet there are no inputs either: the baseline
+                # answers because the features could not be built, and the answer says so.
+                status = "paused" if row.model_pause else "no_inputs"
                 result.append(replace(plain, model_status=status, pause_reason=row.model_pause))
         return result
