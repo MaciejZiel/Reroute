@@ -105,13 +105,14 @@ class ModelPredictor:
         self._last: dict[tuple, tuple[float, Prediction]] = {}
 
     def _cached_explained(self, inputs: dict[str, float], lang: str) -> Prediction:
-        # The fractional seconds since the last stop do not change the reasons within the TTL.
+        # The seconds that pass between two polls (age of the report, time since the last stop)
+        # do not change the reasons within the TTL, so they are not part of the key.
         key = (
             lang,
             *(
                 None if math.isnan(v) else round(v, 1)
                 for name, v in inputs.items()
-                if name != "seconds_since_origin"
+                if name not in ("seconds_since_origin", "vehicle_report_age_s")
             ),
         )
         now = time.monotonic()
