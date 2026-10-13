@@ -405,7 +405,7 @@ def test_a_configured_predictor_replaces_the_baseline(
     class Fixed:
         name, version, kind = "fixed", "9", "model"
 
-        def predict(self, rows, explain=False):
+        def predict(self, rows, explain=False, lang="en"):
             return [predict.Prediction(60, -30, 150, "live_delay") for _ in rows]
 
     monkeypatch.setattr(predict, "_predictor", Fixed())
