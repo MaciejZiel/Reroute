@@ -40,9 +40,8 @@ export default function ModelPanel({ language, t, onClose }: { language: Languag
   const peak = Math.max(1, ...scores.map(({ score }) => score.mae_s.value));
   const nominal = card?.interval_nominal ?? 0.8;
   const hours = card ? hoursByWindow(card.calibration_by_hour) : { heldOut: [], tuned: [] };
-  const first = card?.data?.first_arrival;
-  const last = card?.data?.last_arrival;
-  const sameDay = Boolean(card?.data?.service_dates && card.data.service_dates.length === 1);
+  const trained = card?.training_window;
+  const sameDay = Boolean(trained && warsawDate(trained.from, language) === warsawDate(trained.to, language));
   const gain = card?.gain_vs_best_baseline;
   const trees = scores.find(({ key }) => key === "predTrees")?.score;
 
@@ -59,10 +58,12 @@ export default function ModelPanel({ language, t, onClose }: { language: Languag
         <p className="model-lede">{t("modelOneEvening")}</p>
         <dl className="model-facts">
           <div><dt>{t("modelVersion")}</dt><dd>{card.version}</dd></div>
-          {first && last && <div><dt>{t("modelTrainedOn")}</dt><dd>
-            {sameDay ? warsawDate(first, language) : `${warsawDate(first, language)} – ${warsawDate(last, language)}`}, {warsawClock(first, language)}–{warsawClock(last, language)}
-            {card.data?.arrivals ? ` · ${card.data.arrivals.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} ${t("modelArrivals")}, ${card.data.trips?.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} ${t("modelTrips")}` : ""}
+          {trained && <div><dt>{t("modelTrainedOn")}</dt><dd>
+            {sameDay ? warsawDate(trained.from, language) : `${warsawDate(trained.from, language)} – ${warsawDate(trained.to, language)}`}, {warsawClock(trained.from, language)}–{warsawClock(trained.to, language)}
           </dd></div>}
+          {card.data?.arrivals ? <div><dt>{t("modelRecorded")}</dt><dd>
+            {card.data.arrivals.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelArrivals")}, {card.data.trips?.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelTrips")}
+          </dd></div> : null}
           {card.test_window && <div><dt>{t("modelTestWindow")}</dt><dd>{warsawClock(card.test_window.from, language)}–{warsawClock(card.test_window.to, language)}</dd></div>}
         </dl>
 
