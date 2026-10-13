@@ -79,7 +79,9 @@ def test_end_to_end_training_exports_a_model_the_server_side_code_reproduces(tmp
     card = report._plain(
         {**result, "data": {"last_event_epoch": BASE}, "interval": result["interval"]}
     )
-    document = report.model_document(heads, card)
+    document = report.model_document(
+        heads, card, {"max_stops_ahead": 12, "max_sched_run_s": 1e9, "max_origin_age_s": 600}
+    )
     path = tmp_path / "model.json"
     report.write_json(path, document, compact=True)
 

@@ -99,3 +99,12 @@ def test_explanations_are_sorted_by_effect_and_ignore_noise() -> None:
     assert "(+40 s)" in why.summary and "(-12 s)" in why.summary
     quiet = explain(names, [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], 0.0, 0.0)
     assert quiet.factors == () and "no strong signal" in quiet.summary
+
+
+def test_stops_ahead_and_running_time_are_one_distance_factor_and_seconds_are_exact() -> None:
+    names = ["stops_ahead", "sched_run_s", "leader_delay_s"]
+    why = explain(names, [3.0, 180.0, 120.0], [-23.0, 15.0, 4.0], 0.0, 244.0)
+    assert [f.feature for f in why.factors] == ["distance"]
+    assert why.factors[0].effect_s == -8
+    assert "3 stops ahead, 3 min of running time" in why.factors[0].text
+    assert "expected 4 min 4 s late" in why.summary  # 244 s is not rounded down to 4 min
