@@ -79,6 +79,15 @@ def test_vehicle_standing_at_the_first_stop_is_a_layover_not_a_delay() -> None:
     assert rows[0]["match_status"] == MatchStatus.LAYOVER and rows[0]["delay_s"] is None
 
 
+def test_vehicle_waiting_just_past_the_first_stop_is_a_layover() -> None:
+    # ~35 m past the first stop (5 % of a 680 m leg), ten minutes before departure: still the
+    # layover, not a vehicle running ten minutes early.
+    timetable = _timetable()
+    rows, _, _ = _run(timetable, [_obs(timetable, 21.0005, _at(DAY, 7, 50))])
+
+    assert rows[0]["match_status"] == MatchStatus.LAYOVER and rows[0]["delay_s"] is None
+
+
 def test_far_from_the_route_is_off_route() -> None:
     timetable = _timetable()
     rows, _, _ = _run(timetable, [_obs(timetable, 21.012, _at(DAY, 8, 6), lat=52.26)])
