@@ -129,6 +129,7 @@ export interface VehicleDetail {
 export interface Focus {
   stopId: string | null;
   stopName: string | null;
+  stopCoordinate: [number, number] | null;
   lineId: string | null;
   lineLabel: string | null;
   vehicleId: string | null;
