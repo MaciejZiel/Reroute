@@ -10,6 +10,7 @@ export interface Polled<T> {
  * Load once when `key` changes (null disables it) and refresh every `intervalMs`.
  * The previous data is dropped when the key changes, kept while a refresh is in flight,
  * and a failed refresh keeps showing the last good data next to the error.
+ * Changing only the interval re-arms the timer and keeps the data.
  */
 export function usePolled<T>(
   key: string | null,
@@ -19,9 +20,10 @@ export function usePolled<T>(
   const [state, setState] = useState<Polled<T>>({ data: null, error: null, loading: key !== null });
   const loadRef = useRef(load);
   loadRef.current = load;
+  const runRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
-    if (key === null) { setState({ data: null, error: null, loading: false }); return; }
+    if (key === null) { setState({ data: null, error: null, loading: false }); runRef.current = () => undefined; return; }
     setState({ data: null, error: null, loading: true });
     let alive = true;
     let controller = new AbortController();
@@ -36,9 +38,15 @@ export function usePolled<T>(
         setState((previous) => ({ data: previous.data, error: error as Error, loading: false }));
       }
     };
+    runRef.current = () => { void run(); };
     void run();
-    const timer = window.setInterval(() => { if (!document.hidden) void run(); }, intervalMs);
-    return () => { alive = false; controller.abort(); window.clearInterval(timer); };
+    return () => { alive = false; controller.abort(); runRef.current = () => undefined; };
+  }, [key]);
+
+  useEffect(() => {
+    if (key === null) return;
+    const timer = window.setInterval(() => { if (!document.hidden) runRef.current(); }, intervalMs);
+    return () => window.clearInterval(timer);
   }, [key, intervalMs]);
 
   return state;

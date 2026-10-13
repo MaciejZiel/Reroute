@@ -30,7 +30,7 @@ export const fetchNetwork = (signal?: AbortSignal) => getJson<FeatureCollection>
 export const fetchVehicles = (signal?: AbortSignal) => getJson<FeatureCollection>("vehicles", signal);
 export const fetchPunctuality = (minutes: number) => getJson<PunctualityResult>(`punctuality?minutes=${minutes}`);
 export const searchStops = (query: string, signal?: AbortSignal) => getJson<StopSearchResponse>(`stops?q=${enc(query)}&limit=8`, signal);
-export const fetchDepartures = (stopId: string, signal?: AbortSignal) => getJson<StopDepartures>(`stops/${enc(stopId)}/departures`, signal);
+export const fetchDepartures = (stopId: string, signal?: AbortSignal) => getJson<StopDepartures>(`stops/${enc(stopId)}/departures?per_line=10`, signal);
 export const fetchLine = (line: string, signal?: AbortSignal) => getJson<LineDetail>(`lines/${enc(line)}`, signal);
 export const fetchLineVehicles = (line: string, signal?: AbortSignal) => getJson<FeatureCollection>(`lines/${enc(line)}/vehicles`, signal);
 // Vehicle ids contain slashes (V/9/032) and the route takes them as a path, so only encode the parts.
