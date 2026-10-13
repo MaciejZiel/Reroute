@@ -25,6 +25,7 @@ from app.ml.featurize import (
 )
 
 DEFAULT_LAGS = (1, 2, 3, 4, 6, 8, 12)
+CLUSTER_SECONDS = 900  # bootstrap clusters: one line in one 15-minute block
 EVENT_COLUMNS = (
     "service_date,trip_id,stop_seq,stop_id,line,scheduled_at,actual_at,delay_s,gap_s".split(",")
 )
@@ -71,6 +72,14 @@ class Samples:
 
     def __len__(self) -> int:
         return len(self.y_delay)
+
+    def clusters(self) -> np.ndarray:
+        """Cluster key of each sample for the bootstrap: its line and the 15-minute block of the
+        prediction moment. Samples of one line in one block share the line's recent delays and the
+        traffic of that stretch of the evening, so they are not independent draws; resampling per
+        trip would count them as if they were."""
+        block = (self.t0 // CLUSTER_SECONDS).astype(np.int64)
+        return np.array([f"{line}|{b}" for line, b in zip(self.line, block, strict=True)])
 
     @property
     def origin_delay(self) -> np.ndarray:

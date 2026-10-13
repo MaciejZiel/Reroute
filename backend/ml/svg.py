@@ -131,7 +131,7 @@ def coverage_dots(
     width, height, left, bottom, top = 640, 312, 56, 74, 52
     plot_h = height - top - bottom
     lo, hi = 0.6, 1.0
-    cluster = (width - left - 16) / len(rows)
+    cluster = (width - left - 16) / max(len(rows), 1)  # no trusted bin: an empty chart
 
     def y_of(value: float) -> float:
         return top + plot_h * (1 - (min(max(value, lo), hi) - lo) / (hi - lo))

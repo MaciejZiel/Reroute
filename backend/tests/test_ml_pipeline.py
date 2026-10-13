@@ -39,7 +39,7 @@ def test_baselines_and_clustered_bootstrap() -> None:
     train_part = samples.take(np.arange(len(samples)) < len(samples) // 2)
     median = baselines.HistoricalMedian(train_part).predict(samples)
     assert median.shape == (len(samples),) and not np.isnan(median).any()
-    boot = ClusterBootstrap(samples.trip, resamples=200)
+    boot = ClusterBootstrap(samples.clusters(), resamples=200)
     interval = boot.mean(np.abs(samples.residual))
     assert interval.low <= interval.value <= interval.high
     gain = boot.relative_gain(np.ones(len(samples)), np.full(len(samples), 0.9))

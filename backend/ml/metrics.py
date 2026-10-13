@@ -1,4 +1,4 @@
-"""Error metrics with trip-clustered bootstrap confidence intervals."""
+"""Error metrics with cluster bootstrap confidence intervals."""
 
 from __future__ import annotations
 
@@ -19,12 +19,26 @@ class Interval:
         return f"{self.value:.1f} [{self.low:.1f}, {self.high:.1f}]"
 
 
-class ClusterBootstrap:
-    """Resamples whole trips: arrivals of one trip are strongly dependent, so resampling single
-    predictions would give intervals that are far too narrow."""
+def _percentiles(boot: np.ndarray) -> tuple[float, float]:
+    """2.5th and 97.5th percentile, ignoring resamples without a value (NaN); NaN if none has."""
+    if np.isnan(boot).all():
+        return float("nan"), float("nan")
+    low, high = np.nanpercentile(boot, [2.5, 97.5])
+    return float(low), float(high)
 
-    def __init__(self, trips: np.ndarray, seed: int = 7, resamples: int = RESAMPLES) -> None:
-        self.groups, self.inverse = np.unique(trips, return_inverse=True)
+
+class ClusterBootstrap:
+    """Resamples whole clusters of samples instead of single predictions.
+
+    Predictions that share a trip, a line or a stretch of the evening are strongly dependent (the
+    same recent delays feed their features and the same conditions move their errors), so
+    resampling single rows would give intervals far too narrow. Callers pass one cluster key per
+    sample (``Samples.clusters()``: the line and the 15-minute block of the prediction moment).
+    Clusters are still treated as independent of each other, so a shock that hits the whole
+    network at once, or a different day, is not covered."""
+
+    def __init__(self, clusters: np.ndarray, seed: int = 7, resamples: int = RESAMPLES) -> None:
+        self.groups, self.inverse = np.unique(clusters, return_inverse=True)
         rng = np.random.default_rng(seed)
         self.draws = rng.multinomial(
             len(self.groups), np.full(len(self.groups), 1 / len(self.groups)), size=resamples
@@ -39,10 +53,14 @@ class ClusterBootstrap:
         """Mean of ``values`` (over ``mask``) with a 95 % interval."""
         total = self._per_group(values, mask)
         count = self._per_group(np.ones(len(values)), mask)
-        point = float(total.sum() / count.sum())
-        boot = (self.draws @ total) / np.maximum(self.draws @ count, 1)
-        low, high = np.percentile(boot, [2.5, 97.5])
-        return Interval(point, float(low), float(high))
+        point = float(total.sum() / count.sum()) if count.sum() else float("nan")
+        drawn = self.draws @ count
+        # A resample that holds no sample of the bin has no mean: leave it out rather than count
+        # it as zero (which would drag a share such as coverage towards 0).
+        with np.errstate(invalid="ignore", divide="ignore"):
+            boot = np.where(drawn > 0, (self.draws @ total) / np.where(drawn > 0, drawn, 1), np.nan)
+        low, high = _percentiles(boot)
+        return Interval(point, low, high)
 
     def rmse(self, errors: np.ndarray, mask: np.ndarray | None = None) -> Interval:
         squares = self.mean(errors**2, mask)
@@ -54,5 +72,5 @@ class ClusterBootstrap:
         base, model = self._per_group(baseline_abs), self._per_group(model_abs)
         point = 1 - model.sum() / base.sum()
         boot = 1 - (self.draws @ model) / (self.draws @ base)
-        low, high = np.percentile(boot, [2.5, 97.5])
-        return Interval(float(point), float(low), float(high))
+        low, high = _percentiles(boot)
+        return Interval(float(point), low, high)

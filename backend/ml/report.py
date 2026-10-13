@@ -97,7 +97,7 @@ def write_comparison_plots(out: Path, evaluation: dict) -> None:
             "by_horizon",
             "calibration_by_horizon.svg",
             "80% interval coverage by scheduled time to the stop",
-            "held-out arrivals inside the interval, with the 95% trip-bootstrap interval",
+            "held-out arrivals inside the interval, with the 95% cluster-bootstrap interval",
         ),
         (
             "by_hour",
