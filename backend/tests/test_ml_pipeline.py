@@ -87,10 +87,13 @@ def test_end_to_end_training_exports_a_model_the_server_side_code_reproduces(tmp
 
 def test_vehicle_delay_is_looked_up_at_the_prediction_moment_and_never_from_later() -> None:
     obs = dataset.Observations({"T": ([100.0, 120.0, 140.0], [10, 20, 30])})
-    assert obs.latest("T", 125.0) == 20  # the newest observation at or before the moment
-    assert math.isnan(obs.latest("T", 98.0))  # nothing observed yet
-    assert math.isnan(obs.latest("T", 400.0))  # too old to be "now"
-    assert math.isnan(obs.latest("other", 125.0))
+    assert obs.latest("T", 125.0) == (
+        20,
+        5.0,
+    )  # the newest observation at or before the moment, and its age
+    assert math.isnan(obs.latest("T", 98.0)[0])  # nothing observed yet
+    assert math.isnan(obs.latest("T", 400.0)[0])  # too old to be "now"
+    assert math.isnan(obs.latest("other", 125.0)[0])
 
 
 def test_the_base_of_the_prediction_is_the_vehicle_delay_when_known() -> None:

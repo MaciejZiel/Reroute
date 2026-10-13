@@ -108,3 +108,31 @@ def test_stops_ahead_and_running_time_are_one_distance_factor_and_seconds_are_ex
     assert why.factors[0].effect_s == -8
     assert "3 stops ahead, 3 min of running time" in why.factors[0].text
     assert "expected 4 min 4 s late" in why.summary  # 244 s is not rounded down to 4 min
+
+
+def test_polish_reasons_use_polish_words_plurals_and_decimal_commas() -> None:
+    from app.ml.explain import _Polish, number
+
+    names = ["leader_delay_s", "stop_recent_delay_s", "stops_ahead", "sched_run_s"]
+    why = explain(names, [440.0, -94.0, 3.0, 180.0], [8.0, -16.0, -9.0, 20.0], 195.0, 199.0, "pl")
+
+    assert why.summary.startswith(
+        "Teraz pojazd jest opóźniony o 3 min 15 s; na tym przystanku spodziewamy się opóźnienia"
+    )
+    assert "Główne czynniki:" in why.summary and "Expected" not in why.summary
+    texts = [f.text for f in why.factors]
+    assert (
+        "Pojazdy na tym przystanku były przed czasem o 1 min 34 s (średnio, ostatnie 30 min)"
+        in texts
+    )
+    assert "Przystanek jest 3 przystanki dalej, 3 min planowej jazdy" in texts
+    assert [_Polish.stops(n) for n in (1, 2, 5, 12, 22)] == [
+        "1 przystanek",
+        "2 przystanki",
+        "5 przystanków",
+        "12 przystanków",
+        "22 przystanki",
+    ]
+    assert number(1.5, "pl", 1) == "1,5" and number(1.5, "en", 1) == "1.5"
+    quiet = explain(["is_tram"], [1.0], [1.0], 20.0, 20.0, "pl")
+    assert "brak wyraźnego sygnału" in quiet.summary and "punktualny" in quiet.summary

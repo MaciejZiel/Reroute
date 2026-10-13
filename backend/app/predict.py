@@ -27,6 +27,11 @@ class Prediction:
     # "scheduled": no live vehicle, so the timetable is the best estimate.
     basis: str = "scheduled"
     explanation: Explanation | None = None
+    # Only set by a model predictor: "model", "held" (the last model answer, kept for a minute),
+    # "paused" (the baseline answers because the model must not, see pause_reason) or
+    # "out_of_range" (further than the model was trained for).
+    model_status: str | None = None
+    pause_reason: str | None = None
 
 
 class Predictor(Protocol):
@@ -34,10 +39,12 @@ class Predictor(Protocol):
     version: str
     kind: str  # "baseline" or "model"
 
-    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
-        """One prediction per row. ``explain`` asks for the reasons of one prediction (the first
-        the model answers); it costs far more than the prediction, so only the vehicle view and
-        the single stop entry that is displayed set it."""
+    def predict(
+        self, rows: Sequence[FeatureRow], explain: bool = False, lang: str = "en"
+    ) -> list[Prediction]:
+        """One prediction per row, reasons in ``lang`` ("en" or "pl"). ``explain`` asks for the
+        reasons of one prediction (the first the model answers); it costs far more than the
+        prediction, so only the vehicle view and the single stop entry that is displayed set it."""
 
 
 class BaselinePredictor:
@@ -47,7 +54,9 @@ class BaselinePredictor:
     version = "1"
     kind = "baseline"
 
-    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
+    def predict(
+        self, rows: Sequence[FeatureRow], explain: bool = False, lang: str = "en"
+    ) -> list[Prediction]:
         return [
             Prediction(row.current_delay_s, basis="live_delay")
             if row.current_delay_s is not None

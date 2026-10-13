@@ -43,6 +43,8 @@ class FeatureRow:
     active_alerts: int
     # Inputs of the trained model by name; None when the trip has no recorded stop yet.
     model_inputs: dict[str, float] | None = None
+    # Why model_inputs is None despite a model being in use (see app.ml.live.PAUSE_*), or None.
+    model_pause: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,10 +127,11 @@ def _with_model_inputs(
     db: Session, rows: list[FeatureRow], targets: Sequence[Target], now: datetime
 ) -> list[FeatureRow]:
     from .ml.featurize import TargetStop
-    from .ml.live import load_index, model_inputs
+    from .ml.live import PAUSE_NO_VEHICLE, load_index, model_inputs_with_reasons
 
     if not any(t.current_delay_s is not None for t in targets):
-        return rows  # no live vehicle among them: the baseline answers all, nothing to load
+        # no live vehicle among them: the baseline answers all, nothing to load
+        return [replace(row, model_pause=PAUSE_NO_VEHICLE) for row in rows]
     specs = [
         TargetStop(t.trip_id, t.stop_seq, t.stop_id, t.line, t.scheduled_at.timestamp())
         for t in targets
@@ -140,19 +143,16 @@ def _with_model_inputs(
         sorted({spec.stop_id for spec in specs}),
         now,
     )
+    found = model_inputs_with_reasons(
+        index,
+        specs,
+        now,
+        [t.current_delay_s for t in targets],
+        [t.vehicle_age_s for t in targets],
+    )
     return [
-        replace(row, model_inputs=inputs)
-        for row, inputs in zip(
-            rows,
-            model_inputs(
-                index,
-                specs,
-                now,
-                [t.current_delay_s for t in targets],
-                [t.vehicle_age_s for t in targets],
-            ),
-            strict=True,
-        )
+        replace(row, model_inputs=inputs, model_pause=pause)
+        for row, (inputs, pause) in zip(rows, found, strict=True)
     ]
 
 

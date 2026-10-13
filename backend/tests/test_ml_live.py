@@ -67,7 +67,8 @@ def test_the_model_does_not_answer_without_a_fresh_vehicle_or_a_recent_last_stop
 
     assert inputs(last_known + timedelta(seconds=20), 60, 5) is not None
     assert inputs(last_known + timedelta(seconds=20), None, None) is None  # no live vehicle
-    assert inputs(last_known + timedelta(seconds=20), 60, 120) is None  # vehicle report too old
+    assert inputs(last_known + timedelta(seconds=20), 60, 300) is None  # vehicle report too old
+    assert inputs(last_known + timedelta(seconds=20), 60, 100) is not None  # late, still used
     # the 50-minute-old trip of the review: the last recorded stop is far too old
     assert inputs(last_known + timedelta(minutes=50), 60, 5) is None
 
@@ -341,3 +342,120 @@ def test_the_explained_stop_prediction_is_the_first_one_returned(
     explained = [p for p in body["predictions"] if p["why"] is not None]
     assert len(explained) == 1
     assert body["predictions"][0]["why"] is not None  # on the entry returned first
+
+
+def _row_for(model_file: str, **changes):
+    from app.features import FeatureRow
+    from app.ml.model import DelayModel
+
+    model = DelayModel.load(model_file)
+    inputs = {name: 0.0 for name in model.feature_names}
+    inputs.update(origin_delay_s=100.0, vehicle_delay_s=120.0, stops_ahead=2.0, sched_run_s=120.0)
+    fields = dict(
+        trip_id="t",
+        line="9",
+        stop_id="s",
+        stop_seq=3,
+        scheduled_at=datetime.now(UTC),
+        stops_remaining=0,
+        current_delay_s=120,
+        delay_trend_s_per_min=None,
+        previous_stop_delay_s=None,
+        hour_local=12,
+        weekday=1,
+        route_mean_delay_s=None,
+        active_alerts=0,
+        model_inputs=inputs,
+    )
+    return FeatureRow(**{**fields, **changes})
+
+
+def test_a_late_vehicle_report_does_not_flip_the_answer_between_polls(
+    model_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ml.model import DelayModel, ModelPredictor
+
+    predictor = ModelPredictor(DelayModel.load(model_file))
+    fresh = _row_for(model_file)
+    late = _row_for(model_file, model_inputs=None, model_pause="vehicle_report")
+
+    (first,) = predictor.predict([fresh], explain=True)
+    (second,) = predictor.predict([late], explain=True)  # the next poll: report arrived late
+
+    assert first.model_status == "model" and first.explanation is not None
+    assert second.model_status == "held"
+    assert (second.predicted_delay_s, second.lower_delay_s, second.upper_delay_s) == (
+        first.predicted_delay_s,
+        first.lower_delay_s,
+        first.upper_delay_s,
+    )
+    assert second.explanation == first.explanation  # the reason does not disappear either
+
+    # Never beyond the hold: after a minute the baseline answers and says why.
+    monkeypatch.setattr(ModelPredictor, "HOLD_SECONDS", 0.0)
+    (third,) = predictor.predict([late])
+    assert third.model_status == "paused" and third.pause_reason == "vehicle_report"
+    assert third.lower_delay_s is None and third.explanation is None
+    assert third.predicted_delay_s == 120  # persistence of the vehicle's delay
+
+
+def test_nothing_is_held_without_a_live_vehicle_or_for_another_stop(model_file: str) -> None:
+    from app.ml.model import DelayModel, ModelPredictor
+
+    predictor = ModelPredictor(DelayModel.load(model_file))
+    predictor.predict([_row_for(model_file)])
+    gone = _row_for(model_file, model_inputs=None, model_pause="no_vehicle", current_delay_s=None)
+    other_stop = _row_for(model_file, model_inputs=None, model_pause="vehicle_report", stop_id="x")
+
+    (a,) = predictor.predict([gone])
+    (b,) = predictor.predict([other_stop])
+
+    assert a.model_status == "paused" and a.pause_reason == "no_vehicle" and a.basis == "scheduled"
+    assert b.model_status == "paused"
+
+
+def test_a_vehicle_report_just_over_the_cap_is_paused_with_a_reason_in_the_api(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    trip = _today_trip(network, now, -1, "mlpause")
+    store.write_poll(pg_engine, PollResult(arrivals=[_arrival(trip, 1, "100101", 150, now)]))
+    vehicle = _vehicle(trip, 150, 2, now) | {"observed_at": now - timedelta(seconds=150)}
+    store.upsert_latest(pg_engine, [vehicle])
+
+    body = client.get("/api/vehicles/V/9/2").json()
+
+    first = body["next_stops"][0]
+    assert first["model_status"] == "paused" and first["pause_reason"] == "vehicle_report"
+    assert first["why"] is None and first["lower_delay_seconds"] is None
+    assert first["delay_seconds"] == 150  # the baseline still answers
+
+
+def test_reasons_come_back_in_the_requested_language(
+    client: TestClient,  # noqa: F811
+    network: Session,  # noqa: F811
+    pg_engine: Engine,
+    model_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELAY_MODEL_FILE", model_file)
+    monkeypatch.setenv("PREDICTOR", "model")
+    now = datetime.now(UTC).replace(microsecond=0)
+    trip = _today_trip(network, now, -1, "mlpl")
+    store.write_poll(pg_engine, PollResult(arrivals=[_arrival(trip, 1, "100101", 150, now)]))
+    store.upsert_latest(pg_engine, [_vehicle(trip, 150, 2, now)])
+
+    english = client.get("/api/vehicles/V/9/2").json()["next_stops"][0]["why"]["summary"]
+    polish = client.get("/api/vehicles/V/9/2", params={"lang": "pl"}).json()["next_stops"][0]
+    by_trip = client.get("/api/predictions", params={"trip_id": trip, "lang": "pl"}).json()
+
+    assert english.startswith("Now ")
+    assert polish["why"]["summary"].startswith("Teraz pojazd ")
+    assert by_trip["predictions"][0]["why"]["summary"].startswith("Teraz pojazd ")
+    assert client.get("/api/vehicles/V/9/2", params={"lang": "de"}).status_code == 422

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from geoalchemy2.shape import to_shape
@@ -42,6 +42,7 @@ from .stops import StopInfo, centroid, lines_at, natural_key, stop_index
 
 router = APIRouter(prefix="/api")
 DbSession = Annotated[Session, Depends(get_db)]
+Lang = Annotated[Literal["en", "pl"], Query(description="Language of the reasons")]
 LIVE_NOTICE = (
     "Departures come from the ZTM GTFS timetable; delays are estimated by projecting live "
     "vehicle positions (Miasto Stołeczne Warszawa, GTFS-Realtime by Mikołaj Kuranowski) onto "
@@ -325,7 +326,7 @@ def _status(vehicle: LiveVehicle) -> str:
 
 
 @router.get("/vehicles/{vehicle_id:path}", response_model=VehicleDetail, tags=["vehicles"])
-def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
+def vehicle_detail(vehicle_id: str, db: DbSession, lang: Lang = "en") -> VehicleDetail:
     """One vehicle: delay against the schedule and its next stops with expected times."""
     vehicle = vehicle_by_id(db, vehicle_id)
     if vehicle is None:
@@ -364,7 +365,7 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                 with_model_inputs=predictor.kind == "model",
             )
             for stop, prediction in zip(
-                upcoming_stops, predictor.predict(rows, explain=True), strict=True
+                upcoming_stops, predictor.predict(rows, explain=True, lang=lang), strict=True
             ):
                 live = prediction.basis == "live_delay"
                 next_stops.append(
@@ -382,6 +383,8 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                         lower_delay_seconds=prediction.lower_delay_s if live else None,
                         upper_delay_seconds=prediction.upper_delay_s if live else None,
                         why=_why(prediction),
+                        model_status=prediction.model_status,
+                        pause_reason=prediction.pause_reason,
                     )
                 )
     return VehicleDetail(
@@ -408,6 +411,7 @@ def predictions(
     stop_id: str | None = None,
     trip_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
+    lang: Lang = "en",
 ) -> PredictionsResponse:
     """Predicted arrival delays at a stop (next departures) or along a trip.
 
@@ -430,7 +434,7 @@ def predictions(
         candidates = upcoming(db, [stop], now, line_names=names)
         candidates.sort(key=lambda item: item.expected_at)
         if predictor.kind == "model":
-            explain_first(db, candidates[:limit], names, now)
+            explain_first(db, candidates[:limit], names, now, lang)
         for candidate in candidates[:limit]:
             prediction = candidate.prediction or Prediction(0)
             items.append(
@@ -472,7 +476,9 @@ def predictions(
         rows = live_feature_rows(
             db, targets, now, with_history=True, with_model_inputs=predictor.kind == "model"
         )
-        for stop, prediction in zip(stops, predictor.predict(rows, explain=True), strict=True):
+        for stop, prediction in zip(
+            stops, predictor.predict(rows, explain=True, lang=lang), strict=True
+        ):
             items.append(
                 _item(
                     trip.trip_id,
@@ -513,6 +519,8 @@ def _item(
         upper_delay_s=prediction.upper_delay_s,
         basis=prediction.basis,  # type: ignore[arg-type]
         why=_why(prediction),
+        model_status=prediction.model_status,
+        pause_reason=prediction.pause_reason,
     )
 
 
