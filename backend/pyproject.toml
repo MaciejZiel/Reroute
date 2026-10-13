@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "reroute-api"
 version = "0.1.0"
-description = "Local public transport disruption simulator for Warsaw"
+description = "Live Warsaw transit map API and delay data collector"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1.0",

@@ -21,7 +21,6 @@ from .models import (
     FeedMetadata,
     PatternStop,
     Route,
-    RouteSegment,
     RouteStop,
     Stop,
     StopPattern,
@@ -59,16 +58,6 @@ class ParsedRouteStop:
 
 
 @dataclass(frozen=True)
-class ParsedSegment:
-    route_id: str
-    from_stop_id: str
-    to_stop_id: str
-    run_seconds: int
-    trips: int
-    service_minutes: int
-
-
-@dataclass(frozen=True)
 class ParsedTrip:
     """Stop ids and scheduled departures (seconds after service-day midnight) of one trip."""
 
@@ -91,8 +80,6 @@ class ParsedSchedule:
     feed_end_date: str
     feed_version: str
     attributions: str
-    segments: tuple[ParsedSegment, ...] = ()
-    service_date: str = ""
     trips: tuple[ParsedTrip, ...] = ()
     patterns: tuple[str, ...] = ()
 
@@ -189,10 +176,8 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                     )
                     if shape_id:
                         shape_counts[(route_id, shape_id)] += 1
-        service_date, timed_trips = _representative_day(trip_services, service_dates)
-        segment_builder = _SegmentBuilder(
+        trip_collector = _TripCollector(
             trip_routes,
-            timed_trips,
             trip_meta,
             trip_services,
             _single_day_services(service_dates),
@@ -206,7 +191,7 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         route_stop_sequences: dict[tuple[str, str], int] = {}
         with _csv_rows(archive, "stop_times.txt") as rows:
             for row in rows:
-                segment_builder.add(row)
+                trip_collector.add(row)
                 trip = trip_routes.get(row.get("trip_id", ""))
                 stop_id = row.get("stop_id", "").strip()
                 if (
@@ -221,7 +206,7 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                     continue
                 key = (trip[0], stop_id)
                 route_stop_sequences[key] = min(sequence, route_stop_sequences.get(key, sequence))
-            segment_builder.flush()
+            trip_collector.flush()
 
         shape_points: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
         wanted_shapes = set().union(*selected_shapes.values()) if selected_shapes else set()
@@ -266,13 +251,6 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
     parsed_routes = [route for route in parsed_routes if route.id in routes_with_stops]
     retained_ids = {route.id for route in parsed_routes}
     route_stops = tuple(item for item in route_stops if item.route_id in retained_ids)
-    segments = tuple(
-        segment
-        for segment in segment_builder.segments()
-        if segment.route_id in retained_ids
-        and segment.from_stop_id in stops
-        and segment.to_stop_id in stops
-    )
     return ParsedSchedule(
         stops=tuple(stops.values()),
         routes=tuple(parsed_routes),
@@ -282,17 +260,14 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         feed_end_date=feed_info.get("feed_end_date", ""),
         feed_version=feed_info.get("feed_version", ""),
         attributions=attributions,
-        segments=segments,
-        service_date=service_date,
-        trips=tuple(trip for trip in segment_builder.schedules if trip.route_id in retained_ids),
-        patterns=tuple(segment_builder.patterns),
+        trips=tuple(trip for trip in trip_collector.schedules if trip.route_id in retained_ids),
+        patterns=tuple(trip_collector.patterns),
     )
 
 
 def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
     """Replace only live GTFS records and preserve the fictional demo fallback."""
     live_route_ids = select(Route.id).where(Route.is_demo.is_(False))
-    session.execute(delete(RouteSegment).where(RouteSegment.route_id.in_(live_route_ids)))
     session.execute(delete(TripSchedule))
     session.execute(delete(PatternStop))
     session.execute(delete(StopPattern))
@@ -330,21 +305,6 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
         for item in schedule.route_stops
     )
     session.flush()
-    if schedule.segments:
-        session.execute(
-            insert(RouteSegment),
-            [
-                {
-                    "route_id": item.route_id,
-                    "from_stop_id": item.from_stop_id,
-                    "to_stop_id": item.to_stop_id,
-                    "run_seconds": item.run_seconds,
-                    "trips": item.trips,
-                    "service_minutes": item.service_minutes,
-                }
-                for item in schedule.segments
-            ],
-        )
     if schedule.patterns:
         session.execute(
             insert(StopPattern),
@@ -429,49 +389,22 @@ def _single_day_services(service_dates: dict[str, set[str]]) -> dict[str, date]:
     }
 
 
-def _representative_day(
-    trip_services: dict[str, str], service_dates: dict[str, set[str]]
-) -> tuple[str, set[str] | None]:
-    """Pick the busiest service day so trip counts describe one day, not the whole feed."""
-    if not service_dates:
-        return "", None
-    trips_per_service = Counter(trip_services.values())
-    trips_per_day: Counter[str] = Counter()
-    for service_id, count in trips_per_service.items():
-        for day in service_dates.get(service_id, ()):
-            trips_per_day[day] += count
-    if not trips_per_day:
-        return "", None
-    busiest = max(trips_per_day.values())
-    day = min(day for day, count in trips_per_day.items() if count == busiest)
-    services = {service_id for service_id, days in service_dates.items() if day in days}
-    return (
-        date(int(day[:4]), int(day[4:6]), int(day[6:])).isoformat(),
-        {trip_id for trip_id, service_id in trip_services.items() if service_id in services},
-    )
-
-
-class _SegmentBuilder:
-    """Collect stop-to-stop run times while stop_times.txt streams past, one trip at a time."""
+class _TripCollector:
+    """Collect each trip's compact timetable while stop_times.txt streams past."""
 
     def __init__(
         self,
         trip_routes: dict[str, tuple[str, str]],
-        trips: set[str] | None,
-        trip_meta: dict[str, tuple[str, int | None]] | None = None,
-        trip_services: dict[str, str] | None = None,
-        single_day_services: dict[str, date] | None = None,
+        trip_meta: dict[str, tuple[str, int | None]],
+        trip_services: dict[str, str],
+        single_day_services: dict[str, date],
     ):
         self.trip_routes = trip_routes
-        self.trips = trips
-        self.trip_meta = trip_meta or {}
-        self.single_day_services = single_day_services or {}
-        self.trip_services = trip_services or {}
+        self.trip_meta = trip_meta
+        self.trip_services = trip_services
+        self.single_day_services = single_day_services
         self.trip_id = ""
         self.rows: list[tuple[int, str, int, int]] = []
-        self.runs: dict[tuple[str, str, str], list[int]] = defaultdict(list)
-        self.first_departure: dict[tuple[str, str, str], int] = {}
-        self.last_departure: dict[tuple[str, str, str], int] = {}
         self.schedules: list[ParsedTrip] = []
         self.patterns: dict[str, int] = {}
 
@@ -496,7 +429,6 @@ class _SegmentBuilder:
         if self.rows and self.trip_id in self.trip_routes:
             route_id = self.trip_routes[self.trip_id][0]
             ordered = sorted(self.rows)
-            # Every trip keeps its compact timetable, used to estimate live delays.
             # Trips share a few thousand stop patterns, so stop ids are stored once per pattern.
             pattern = ",".join(stop_id for _, stop_id, _, _ in ordered)
             pattern_id = self.patterns.setdefault(pattern, len(self.patterns))
@@ -515,38 +447,7 @@ class _SegmentBuilder:
                     direction_id,
                 )
             )
-            if self.trips is not None and self.trip_id not in self.trips:
-                self.rows = []
-                return
-            for (_, from_stop, _, departure), (_, to_stop, arrival, _) in zip(
-                ordered, ordered[1:], strict=False
-            ):
-                run = arrival - departure
-                if from_stop == to_stop or not 0 <= run <= 3600:
-                    continue
-                key = (route_id, from_stop, to_stop)
-                self.runs[key].append(run)
-                self.first_departure[key] = min(departure, self.first_departure.get(key, departure))
-                self.last_departure[key] = max(departure, self.last_departure.get(key, departure))
         self.rows = []
-
-    def segments(self) -> list[ParsedSegment]:
-        return [
-            ParsedSegment(
-                route_id=route_id,
-                from_stop_id=from_stop,
-                to_stop_id=to_stop,
-                # Timetables use whole minutes, so the mean over all trips is a better
-                # estimate than the median, which is often exactly 0 or 60 seconds.
-                run_seconds=max(round(sum(runs) / len(runs)), 20),
-                trips=len(runs),
-                service_minutes=max(
-                    round((self.last_departure[key] - self.first_departure[key]) / 60), 60
-                ),
-            )
-            for key, runs in self.runs.items()
-            for route_id, from_stop, to_stop in [key]
-        ]
 
 
 def _gtfs_seconds(value: str) -> int | None:
