@@ -147,7 +147,29 @@ def main() -> int:
         action="store_true",
         help="also use hour, weekday and stop number (only sensible with several days of data)",
     )
+    frozen = commands.add_parser(
+        "evaluate-frozen",
+        help="score an unchanged model file on arrivals after its training window",
+    )
+    frozen.add_argument("--model", type=Path, default=Path("models/delay_model.json"))
+    frozen.add_argument("--events", type=Path, required=True)
+    frozen.add_argument("--observations", type=Path)
+    frozen.add_argument(
+        "--since", help="UTC time (ISO 8601); default: the last arrival the model was trained on"
+    )
+    frozen.add_argument("--out", type=Path, help="also write the table to this markdown file")
     args = parser.parse_args()
+    if args.command == "evaluate-frozen":
+        from . import frozen as frozen_check
+
+        since = frozen_check.parse_utc(args.since) if args.since else None
+        text = frozen_check.render(
+            frozen_check.evaluate_frozen(args.model, args.events, args.observations, since)
+        )
+        print(text)
+        if args.out:
+            args.out.write_text(text, encoding="utf-8")
+        return 0
     np.seterr(all="raise", under="ignore")
     return run_train(args)
 

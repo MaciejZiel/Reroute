@@ -124,3 +124,52 @@ def test_the_base_of_the_prediction_is_the_vehicle_delay_when_known() -> None:
     without = dataset.build_samples(events)
     assert np.all(with_live.base_delay == 999)
     assert np.allclose(without.base_delay, without.origin_delay)
+
+
+def test_frozen_evaluation_scores_only_predictions_after_the_cutoff_and_fits_nothing(
+    tmp_path,
+) -> None:
+    from datetime import UTC, datetime
+
+    from ml import frozen
+
+    events = synthetic_events()
+    samples = dataset.build_samples(events)
+    folds = dataset.time_folds(events)
+    fold = folds.assign(samples)
+    parts = [samples.take(fold == i) for i in range(4)]
+    heads = train.fit(parts[0], parts[1], parts[2], exclude=())
+    card = {"data": {"last_event_epoch": BASE}, "interval": {"nominal": 0.8}, "promoted": True}
+    model_path = tmp_path / "model.json"
+    report.write_json(
+        model_path,
+        report.model_document(
+            heads, card, {"max_stops_ahead": 12, "max_sched_run_s": 1e9, "max_origin_age_s": 600}
+        ),
+        compact=True,
+    )
+    csv_path = tmp_path / "events.csv"
+
+    def stamp(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+    csv_path.write_text(
+        "service_date,trip_id,stop_seq,stop_id,line,scheduled_at,actual_at,delay_s,gap_s\n"
+        + "".join(
+            f"2025-10-09,{e.trip_id},{e.stop_seq},{e.stop_id},{e.line},{stamp(e.scheduled_s)},"
+            f"{stamp(e.actual_s)},{e.delay_s},{round(e.known_s - e.actual_s)}\n"
+            for e in events
+        )
+    )
+    cutoff = folds.cuts[3]
+
+    result = frozen.evaluate_frozen(model_path, csv_path, None, since=cutoff)
+
+    assert result["samples"] > 0
+    assert result["first_sample"] >= cutoff
+    assert result["share_answered_by_model"] == 1.0
+    assert result["model_version"] == json.loads(model_path.read_text())["version"]
+    text = frozen.render(result)
+    assert "Frozen model" in text and "persistence" in text
+    nothing = frozen.evaluate_frozen(model_path, csv_path, None, since=BASE * 2)
+    assert nothing["samples"] == 0
