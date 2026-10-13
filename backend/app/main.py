@@ -5,30 +5,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
-from . import models  # noqa: F401 — register SQLAlchemy models before create_all.
 from .api import router
-from .database import Base, SessionLocal, engine
+from .database import SessionLocal
 from .demo_data import seed_demo_network
+from .migrate import migrate
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    with engine.begin() as connection:
-        connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
-    Base.metadata.create_all(bind=engine)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "ALTER TABLE IF EXISTS routes ALTER COLUMN shape "
-                "TYPE geometry(Geometry, 4326) USING shape::geometry(Geometry, 4326)"
-            )
-        )
-        # create_all only indexes new tables; add indexes introduced later to older databases.
-        connection.execute(
-            text("CREATE INDEX IF NOT EXISTS ix_route_stops_stop_id ON route_stops (stop_id)")
-        )
+    migrate()
     with SessionLocal() as session:
         seed_demo_network(session)
     yield

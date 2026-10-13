@@ -1,9 +1,20 @@
 """Transit network, position snapshots, and saved simulations."""
 
-from datetime import datetime
+from datetime import date, datetime
 
 from geoalchemy2 import Geometry
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -71,16 +82,36 @@ class StopPattern(Base):
     stop_ids: Mapped[str] = mapped_column(Text)
 
 
+class PatternStop(Base):
+    """One row per stop of a stop pattern: finds the patterns (and so trips) calling at a stop."""
+
+    __tablename__ = "pattern_stops"
+
+    pattern_id: Mapped[int] = mapped_column(
+        ForeignKey("stop_patterns.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stop_id: Mapped[str] = mapped_column(String(80), index=True)
+
+
 class TripSchedule(Base):
     """Compact timetable of one scheduled trip, matched to live vehicles by trip id."""
 
     __tablename__ = "trip_schedules"
+    __table_args__ = (
+        Index("ix_trip_schedules_pattern_date", "pattern_id", "service_date"),
+        Index("ix_trip_schedules_route_date", "route_id", "service_date"),
+    )
 
     trip_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     route_id: Mapped[str] = mapped_column(String(80), index=True)
     pattern_id: Mapped[int] = mapped_column(Integer)
     # Comma-separated departures in seconds after service-day midnight, one per pattern stop.
     departures: Mapped[str] = mapped_column(Text)
+    # Warsaw service day the departures count from; NULL when the feed does not reveal it.
+    service_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    headsign: Mapped[str] = mapped_column(Text, default="", server_default="")
+    direction_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class DelaySnapshot(Base):

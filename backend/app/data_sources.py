@@ -21,7 +21,17 @@ from shapely.geometry import LineString, MultiLineString, Point
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
-from .models import FeedMetadata, Route, RouteSegment, RouteStop, Stop, StopPattern, TripSchedule
+from .models import (
+    FeedMetadata,
+    PatternStop,
+    Route,
+    RouteSegment,
+    RouteStop,
+    Stop,
+    StopPattern,
+    TripSchedule,
+)
+from .timeutil import trip_service_date
 
 DEFAULT_GTFS_URL = "https://mkuran.pl/gtfs/warsaw.zip"
 DEFAULT_VEHICLES_URL = "https://mkuran.pl/gtfs/warsaw/vehicles.pb"
@@ -71,6 +81,9 @@ class ParsedTrip:
     route_id: str
     pattern_id: int
     departures: str
+    service_date: date | None = None
+    headsign: str = ""
+    direction_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +196,7 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
         service_dates = _service_dates(archive, names)
         trip_routes: dict[str, tuple[str, str]] = {}
         trip_services: dict[str, str] = {}
+        trip_meta: dict[str, tuple[str, int | None]] = {}
         shape_counts: Counter[tuple[str, str]] = Counter()
         with _csv_rows(archive, "trips.txt") as rows:
             for row in rows:
@@ -192,10 +206,21 @@ def parse_schedule(path: Path, downloaded_at: datetime | None = None) -> ParsedS
                 if trip_id and route_id in routes:
                     trip_routes[trip_id] = (route_id, shape_id)
                     trip_services[trip_id] = row.get("service_id", "").strip()
+                    direction = row.get("direction_id", "").strip()
+                    trip_meta[trip_id] = (
+                        row.get("trip_headsign", "").strip(),
+                        int(direction) if direction in {"0", "1"} else None,
+                    )
                     if shape_id:
                         shape_counts[(route_id, shape_id)] += 1
         service_date, timed_trips = _representative_day(trip_services, service_dates)
-        segment_builder = _SegmentBuilder(trip_routes, timed_trips)
+        segment_builder = _SegmentBuilder(
+            trip_routes,
+            timed_trips,
+            trip_meta,
+            trip_services,
+            _single_day_services(service_dates),
+        )
 
         selected_shapes: dict[str, set[str]] = defaultdict(set)
         for (route_id, shape_id), _ in shape_counts.most_common():
@@ -293,6 +318,7 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
     live_route_ids = select(Route.id).where(Route.is_demo.is_(False))
     session.execute(delete(RouteSegment).where(RouteSegment.route_id.in_(live_route_ids)))
     session.execute(delete(TripSchedule))
+    session.execute(delete(PatternStop))
     session.execute(delete(StopPattern))
     session.execute(delete(RouteStop).where(RouteStop.route_id.in_(live_route_ids)))
     session.execute(delete(Route).where(Route.is_demo.is_(False)))
@@ -351,6 +377,14 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
                 for pattern_id, stop_ids in enumerate(schedule.patterns)
             ],
         )
+        session.execute(
+            insert(PatternStop),
+            [
+                {"pattern_id": pattern_id, "position": position, "stop_id": stop_id}
+                for pattern_id, stop_ids in enumerate(schedule.patterns)
+                for position, stop_id in enumerate(stop_ids.split(","))
+            ],
+        )
     for start in range(0, len(schedule.trips), 5000):
         session.execute(
             insert(TripSchedule),
@@ -360,6 +394,9 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
                     "route_id": trip.route_id,
                     "pattern_id": trip.pattern_id,
                     "departures": trip.departures,
+                    "service_date": trip.service_date,
+                    "headsign": trip.headsign,
+                    "direction_id": trip.direction_id,
                 }
                 for trip in schedule.trips[start : start + 5000]
             ],
@@ -492,6 +529,16 @@ def _service_dates(archive: zipfile.ZipFile, names: set[str]) -> dict[str, set[s
     return dates
 
 
+def _single_day_services(service_dates: dict[str, set[str]]) -> dict[str, date]:
+    """Services that run on exactly one day: their trips have an unambiguous service date."""
+    return {
+        service_id: date(int(day[:4]), int(day[4:6]), int(day[6:]))
+        for service_id, days in service_dates.items()
+        if len(days) == 1
+        for day in days
+    }
+
+
 def _representative_day(
     trip_services: dict[str, str], service_dates: dict[str, set[str]]
 ) -> tuple[str, set[str] | None]:
@@ -517,9 +564,19 @@ def _representative_day(
 class _SegmentBuilder:
     """Collect stop-to-stop run times while stop_times.txt streams past, one trip at a time."""
 
-    def __init__(self, trip_routes: dict[str, tuple[str, str]], trips: set[str] | None):
+    def __init__(
+        self,
+        trip_routes: dict[str, tuple[str, str]],
+        trips: set[str] | None,
+        trip_meta: dict[str, tuple[str, int | None]] | None = None,
+        trip_services: dict[str, str] | None = None,
+        single_day_services: dict[str, date] | None = None,
+    ):
         self.trip_routes = trip_routes
         self.trips = trips
+        self.trip_meta = trip_meta or {}
+        self.single_day_services = single_day_services or {}
+        self.trip_services = trip_services or {}
         self.trip_id = ""
         self.rows: list[tuple[int, str, int, int]] = []
         self.runs: dict[tuple[str, str, str], list[int]] = defaultdict(list)
@@ -553,12 +610,19 @@ class _SegmentBuilder:
             # Trips share a few thousand stop patterns, so stop ids are stored once per pattern.
             pattern = ",".join(stop_id for _, stop_id, _, _ in ordered)
             pattern_id = self.patterns.setdefault(pattern, len(self.patterns))
+            headsign, direction_id = self.trip_meta.get(self.trip_id, ("", None))
+            service_date = trip_service_date(self.trip_id) or self.single_day_services.get(
+                self.trip_services.get(self.trip_id, "")
+            )
             self.schedules.append(
                 ParsedTrip(
                     self.trip_id,
                     route_id,
                     pattern_id,
                     ",".join(str(departure) for _, _, _, departure in ordered),
+                    service_date,
+                    headsign,
+                    direction_id,
                 )
             )
             if self.trips is not None and self.trip_id not in self.trips:
