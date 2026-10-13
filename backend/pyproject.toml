@@ -20,12 +20,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9.0", "ruff>=0.9,<1.0"]
+# Training only (laptop or CI). The server evaluates exported models with no extra dependency.
+ml = ["lightgbm==4.7.0", "numpy==2.5.3", "scipy==1.18.1"]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "ml*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
@@ -33,6 +36,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"ml/svg.py" = ["E501"]  # SVG markup in f-strings
 
 [tool.setuptools.package-data]
 app = ["migrations/*.sql"]

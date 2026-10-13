@@ -21,6 +21,7 @@ from .predict import Prediction, get_predictor
 from .schemas import (
     AlertInfo,
     Departure,
+    Factor,
     Feature,
     FeatureCollection,
     LineDepartures,
@@ -35,6 +36,7 @@ from .schemas import (
     StopSearchResponse,
     StopSummary,
     VehicleDetail,
+    Why,
 )
 from .stops import StopInfo, centroid, lines_at, natural_key, stop_index
 
@@ -353,7 +355,13 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                 )
                 for stop in upcoming_stops
             ]
-            rows = live_feature_rows(db, targets, now, with_history=predictor.kind != "baseline")
+            rows = live_feature_rows(
+                db,
+                targets,
+                now,
+                with_history=predictor.kind != "baseline",
+                with_model_inputs=predictor.kind == "model",
+            )
             for stop, prediction in zip(upcoming_stops, predictor.predict(rows), strict=True):
                 live = prediction.basis == "live_delay"
                 next_stops.append(
@@ -368,6 +376,9 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                             else None
                         ),
                         delay_seconds=prediction.predicted_delay_s if live else None,
+                        lower_delay_seconds=prediction.lower_delay_s if live else None,
+                        upper_delay_seconds=prediction.upper_delay_s if live else None,
+                        why=_why(prediction),
                     )
                 )
     return VehicleDetail(
@@ -452,7 +463,9 @@ def predictions(
             )
             for stop in stops
         ]
-        rows = live_feature_rows(db, targets, now, with_history=True)
+        rows = live_feature_rows(
+            db, targets, now, with_history=True, with_model_inputs=predictor.kind == "model"
+        )
         for stop, prediction in zip(stops, predictor.predict(rows), strict=True):
             items.append(
                 _item(
@@ -493,4 +506,17 @@ def _item(
         lower_delay_s=prediction.lower_delay_s,
         upper_delay_s=prediction.upper_delay_s,
         basis=prediction.basis,  # type: ignore[arg-type]
+        why=_why(prediction),
+    )
+
+
+def _why(prediction: Prediction) -> Why | None:
+    if prediction.explanation is None:
+        return None
+    return Why(
+        summary=prediction.explanation.summary,
+        factors=[
+            Factor(feature=f.feature, effect_seconds=f.effect_s, text=f.text)
+            for f in prediction.explanation.factors
+        ],
     )

@@ -47,3 +47,15 @@ def db(pg_engine: Engine) -> Iterator[Session]:
         )
         session.commit()
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_model_file(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Tests see the baseline unless they ask for a model: the repository ships a model file."""
+    from app import predict
+
+    monkeypatch.setenv("DELAY_MODEL_FILE", "/nonexistent/delay_model.json")
+    monkeypatch.delenv("PREDICTOR", raising=False)
+    monkeypatch.setattr(predict, "_predictor", None)
+    yield
+    monkeypatch.setattr(predict, "_predictor", None)

@@ -4,7 +4,7 @@
 
 **[Live demo](https://reroute.maciejzielinski.dev)** · [Status](https://status.maciejzielinski.dev) · [Portfolio](https://maciejzielinski.dev)
 
-Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival. The machine-learning delay model that will use that data is the next step; it is not built yet.
+Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival, and a small gradient-boosted model trained on that data predicts delays further down the line, with an interval and a plain-words reason (see [Delay model](#delay-model)).
 
 [![CI](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -18,7 +18,7 @@ Click a stop to see every line serving it with the next timetable departures and
 
 - **Live now:** the map, departures with delays estimated from live positions, line and vehicle views and the per-line punctuality view, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
 - **Self-hosted:** the public instance runs on a home server, not on a cloud platform.
-- **Next step, not built yet:** a machine-learning model that predicts delays. The data for it is already being collected: vehicle observations and derived stop arrivals are stored continuously, and raw feed snapshots are archived. Until a model exists, `/api/predictions` simply assumes the current delay persists.
+- **Delay model:** a first model exists and is served by default because it beat the baselines on held-out future data, but it was trained on a single evening of data (see the [model card](#delay-model)). Where the model cannot answer (a trip with no recorded stop yet) the API falls back to "the current delay persists".
 
 ## What it does
 
@@ -88,7 +88,7 @@ Replay archived snapshots (`<dir>/<YYYY-MM-DD>/v_<HHMMSS>.pb.gz`, UTC); repeated
 docker compose run --rm -v ~/reroute-data/raw:/raw collector python -m app.collector backfill --raw-dir /raw
 ```
 
-Export training rows for a model: `python -m app.features export --from 2026-10-13 --to 2026-10-20 --out rows.jsonl`. To use a trained model set `PREDICTOR=package.module:ClassName` (see `backend/app/predict.py`).
+Export training rows for a model: `python -m app.features export --from 2026-10-13 --to 2026-10-20 --out rows.jsonl`. The delay model is trained from the arrival table directly, see [Delay model](#delay-model); `PREDICTOR=package.module:ClassName` still plugs in any other predictor (see `backend/app/predict.py`).
 
 Schema changes are plain SQL files in `backend/app/migrations/`, applied at start-up and by `python -m app.migrate`.
 
@@ -144,13 +144,79 @@ Measured on the real Warsaw timetable (314 lines, 7,241 stops, 282,430 trips ove
 
 Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, service_date)` and the trip primary key, and read the departure time with `split_part` in SQL. Collector: ~86 MiB RSS, 0.14 s per poll; observations ~146 B/row (~6.5M rows, ~0.95 GB a day measured live), arrival events ~170 B/row (~220 MB a day).
 
+## Delay model
+
+`/api/predictions`, the stop panel and the vehicle view ask a `Predictor` for the delay at each upcoming stop. Two exist: the baseline (the vehicle's current delay persists) and a gradient-boosted tree model that predicts how much the delay *changes* between the vehicle's latest recorded stop and a later stop of the same trip, together with an 80% interval and the factors behind the number. Example answer for a stop three stops ahead of a vehicle that is 3 min 53 s late (a real held-out case; it actually arrived 4 min 1 s late):
+
+```json
+{"predicted_delay_s": 256, "lower_delay_s": 206, "upper_delay_s": 330,
+ "why": {"summary": "Now 3 min 53 s late; expected 4 min 16 s late at this stop. Main factors: 3 min of scheduled running time remain (+7 s); the vehicle ahead on this line was 7 min 20 s late here (+7 s).",
+         "factors": [{"feature": "sched_run_s", "effect_seconds": 7, "text": "3 min of scheduled running time remain"}, "..."]}}
+```
+
+The vehicle view shows the same reason as one quiet line under the next stops, with the likely range (the sentence is English in both UI languages). Reasons are exact TreeSHAP values of the median model, computed for the first prediction of a request only (the exact computation is the slow part on a small server).
+
+### Model card
+
+**What it is.** LightGBM quantile regression (median, 10% and 90% quantiles of the delay change; roughly 300 trees each, 15 leaves, early stopping), exported to a JSON file of flat tree arrays and evaluated by about 200 lines of pure Python (`backend/app/ml/ensemble.py`), so the server needs no extra dependency (no scikit-learn, no LightGBM, no NumPy; ONNX was not needed). The interval is widened by split-conformal calibration on a separate later fold. Version `20261013-55cc16f2`, file `backend/models/delay_model.json` (about 1 MB).
+
+**Data.** One service date (Tuesday 2026-10-13), 14:25 to 19:04 UTC (4.66 hours, 16:25 to 21:04 local time, afternoon rush into the evening) of the live Warsaw feed: 210,001 recorded stop arrivals on 9,160 trips, 265 lines and 6,397 stops. That is **one evening of one season, nothing more**: no weekend, no morning rush, no holiday, no bad weather, no autumn-versus-summer difference. Weather was not used (no source with a clear free licence was wired in). Arrival times are themselves interpolated between 20-30 s observations.
+
+**Samples and split.** A prediction is simulated at the moment each arrival becomes known: the target is a stop 1, 2, 3, 4, 6, 8 or 12 stops further along the same trip that has not been reached yet (1,085,562 samples). The split is by time only, four consecutive windows by fractions of the span, and a sample belongs to a window only if the prediction moment and the arrival it predicts both lie inside it (so 65,324 samples straddling a boundary are dropped). Train 14:26-17:35 UTC (811,085 samples), early stopping to 17:57 (57,573), interval calibration and best-baseline choice to 18:20 (52,839), **test 18:20-19:04 UTC = the last 44 minutes, never touched before the final evaluation** (98,741 samples). Features use only arrivals known at the prediction moment (unit-tested by changing everything that happens later), and the live code computes the inputs with the same functions as training (tested for equality against the database).
+
+**Features.** Stops ahead and scheduled running time to the target; the vehicle's own latest reported delay and the delay at its last recorded stop and how it changed; the delay trend over 10 min; the mean delay of other vehicles on the line (15 min) and at the target stop (30 min); the delay of the vehicle ahead on the same line at the target stop and its scheduled headway; tram or bus. Hour, weekday and stop number are implemented but switched off (`--calendar-features`): with one evening they can only memorise the clock.
+
+**Results on the held-out future window** (MAE and RMSE in seconds; 95% intervals from a bootstrap that resamples whole trips, because arrivals of one trip are strongly dependent; "MAE under 2 min" etc. bin by the scheduled time from the last stop to the target):
+
+| predictor | MAE s (95% CI) | RMSE s (95% CI) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| scheduled (zero delay) | 95.2 (88.4 to 102.6) | 155.2 (131.3 to 182.0) | -62.2 | 89.6 | 92.3 | 96.3 | 101.9 |
+| persistence (BaselinePredictor) | 43.5 (42.1 to 44.8) | 68.4 (63.1 to 73.5) | -3.6 | 17.5 | 33.4 | 49.7 | 66.8 |
+| historical median (line, stop, hour) | 122.4 (116.8 to 127.9) | 158.9 (140.7 to 181.7) | +70.8 | 112.0 | 118.3 | 124.9 | 132.1 |
+| calibrated persistence | 51.4 (50.0 to 52.8) | 75.7 (71.3 to 80.2) | +26.1 | 17.8 | 36.0 | 58.1 | 87.7 |
+| gradient boosted trees (median) | 39.8 (38.7 to 41.0) | 59.9 (56.4 to 63.7) | +1.0 | 16.5 | 30.2 | 45.1 | 62.3 |
+
+80% interval on the test fold: model coverage 80.8% (80.0% to 81.6%), mean width 133 s; persistence plus empirical residual quantiles: coverage 85.8% (85.1% to 86.5%), mean width 189 s.
+
+The best baseline, chosen on the calibration window and not on the test window, is the existing persistence predictor. The model's MAE is **8.4% lower** (95% CI 6.8% to 9.9%), RMSE about 12% lower, and the gain grows with distance. The rule for serving it was fixed beforehand: at least 5% lower MAE than the best baseline with a bootstrap interval above zero. It passed, so the model is the default; had it failed, the file would still be trained and reported but `get_predictor()` would keep the baseline (the card inside the model file says `promoted: false`).
+
+![MAE by horizon, model against persistence](docs/ml/mae_by_horizon.svg)
+
+**Explainability.** Global importance (mean absolute SHAP value on the test window) and partial dependence of the four strongest features, produced by the training command:
+
+![Global feature importance](docs/ml/importance.svg)
+![Partial dependence](docs/ml/partial_dependence.svg)
+
+Read the partial dependence with care: the strongest features are correlated (stops ahead and scheduled running time say nearly the same), so their individual curves share one effect. It shows what the model learned, not causes: further along a trip delays tend to grow, a late vehicle ahead and late traffic at the stop push later, and that is all the data can say.
+
+**Limitations, plainly.**
+- One evening. The margin could be different, or vanish, on a weekend, in the morning rush, in winter or on a day with a disruption. The test window is the last 44 minutes of the evening, so there is some distribution shift inside the evening, but nothing resembling a different day.
+- The gain is modest: about 4 s of MAE on a 44 s baseline. Persistence is a strong baseline for a delay that changes slowly, and it is the thing to beat. The historical per-stop median baseline is far worse here, most likely because it has seen only one afternoon while the typical delay level moves during the evening (an untested explanation).
+- Delays are derived (interpolated) and the model is evaluated against these derived times, not against a ground-truth feed; the labels and the vehicle-reported delay come from the same pipeline.
+- In training the vehicle's reported delay is the newest observation at the prediction moment (a few seconds old); live it can be up to one polling interval older, so the live margin may be somewhat smaller.
+- No horizon beyond 12 stops, no holiday or weather information, one fixed 80% interval. The interval is calibrated overall (80.8% on the test window), not per line or per horizon.
+- Stops of a trip with no recorded stop yet (a vehicle that has just started) fall back to persistence.
+
+**Retraining.** Everything below runs on a laptop; the server only reads the resulting file.
+
+```bash
+pip install -e 'backend[dev,ml]'        # LightGBM, NumPy, SciPy (training only)
+REROUTE_SSH="ssh -p 8022 user@server" make ml-pull   # or DATABASE_URL=... make ml-pull
+make ml-train                           # writes backend/models/delay_model.json and docs/ml/*
+make ml-test                            # includes: exported model reproduces LightGBM, SHAP and live inputs
+```
+
+The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (default `backend/models/delay_model.json`). With nothing set the API serves the model only if its card says it was promoted; `PREDICTOR=model` forces it, `PREDICTOR=package.module:Class` selects another predictor. The version stamp (data date and a hash of the trees) is returned in every response as `model.version`. A migration adds a small BRIN index on `stop_arrival_events(actual_at)` so the live inputs (the last hour of arrivals of a few lines and stops) are cheap to read.
+
+**What would make it better as data grows.** Several weeks would allow weekday, hour and holiday features, per-line and per-stop effects (a target encoding of how much each stop segment typically adds), a validation scheme with several consecutive test windows instead of one, weather as a feature, and a per-horizon calibrated interval. Retraining on a rolling window is one command; the next honest check is whether the margin holds on a day the model has never seen.
+
 ## Key technical decisions
 
 - **Demo data first, real data on demand.** A fresh `docker compose up` works offline with a fictional network; every API response carries `data_mode` (`demo` or `live`) plus a source notice. The timetable import is an explicit step and replaces only non-demo rows.
 - **Delays from positions, not from a predictions feed.** The Warsaw feed publishes positions with trip ids but no delays, so the delay is the observation time minus the scheduled time interpolated at the vehicle's projection onto its trip's stops. Trip ids embed the service date (`2026-10-13:140:...`), so a vehicle maps to exactly one stored timetable. GTFS times run from "noon minus 12 hours" of the service day and can exceed 24:00; all instants are computed in UTC from that origin so after-midnight trips and DST days (23 and 25 hours) are right. Vehicles more than 250 m from the trip, waiting at the first stop or outside -15...+90 min get no delay instead of a guess.
 - **Observations and arrival events are separate.** Observations (every new vehicle position, 7 days) are the raw material; arrival events (the interpolated time a vehicle passed each stop, 90 days) are what a model learns from. Arrival derivation is a pure function shared by the live loop and the backfill, so both give identical results.
 - **Stations, not just platforms.** A stop panel covers all platforms with the same name within 400 m, each departure tagged with its platform.
-- **A replaceable predictor.** The stop panel and vehicle view already go through the `Predictor` interface, so a trained model changes numbers, not the UI or the API.
+- **A replaceable predictor.** The stop panel and vehicle view go through the `Predictor` interface, so the trained model changed numbers and added an interval and a reason, not the structure of the API.
 
 ## Limitations / next steps
 
@@ -159,7 +225,7 @@ Departure lookups use `pattern_stops(stop_id)`, `trip_schedules(pattern_id, serv
 - The departure from the first stop is not recorded as an arrival event (the layover hides it).
 - No holiday calendar feature yet; a service-date lookup from `calendar_dates.txt` would add it.
 - The whole-fleet view is a deliberate opt-in: it is about 1,800 dots at city scale. "Heading to my stop" relies on the stop's departure list (next 2 hours, 10 per line), so a vehicle further away than that is not counted.
-- Tests cover the pure derivation, storage, backfill and API against PostGIS; the frontend has unit tests for the vehicle filtering and the palette contrast.
+- Tests cover the pure derivation, storage, backfill and API against PostGIS, and the model pipeline (no leakage across the time split, exported model equals LightGBM and SHAP, live inputs equal training inputs); the frontend has unit tests for the vehicle filtering and the palette contrast.
 
 ## Data and attribution
 
