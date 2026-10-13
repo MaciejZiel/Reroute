@@ -185,7 +185,7 @@ export default function App() {
           <button type="button" className="sheet-handle" onPointerDown={onHandleDown} onPointerUp={onHandleUp} onPointerCancel={() => { drag.current = null; }}
             onClick={onHandleKey} aria-label={t("sheetToggle")} aria-expanded={sheet !== "peek"} aria-controls="panel-scroll"><i/></button>
           <Stepper focus={focus} t={t} onStep={goStep} vehicleLabel={vehicle.data?.label} />
-          <div className="panel-scroll" id="panel-scroll" ref={scroller} aria-live="polite">
+          <div className="panel-scroll" id="panel-scroll" ref={scroller}>
             {apiError && <p className="form-error" role="status">{t("dataFallback")}</p>}
             <Panel language={language} t={t} focus={focus} stop={stop} line={line} lineVehicles={lineShown} allLineVehicles={lineVehicles.data}
               lineScope={scope} onScope={setLineScope} headingCount={heading.size}
