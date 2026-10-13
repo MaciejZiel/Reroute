@@ -3,9 +3,9 @@
 Two entry points share the feature definitions:
 
 * ``live_feature_rows``: one row per (trip, upcoming stop) for the prediction endpoint;
-* ``export_training_rows``: one row per recorded stop arrival, using only information from
-  earlier stops of the same trip (``LAG``), so a model trained on the export sees at training
-  time what it will see at prediction time.
+* ``export_training_rows``: one row per recorded stop arrival, using only earlier stops of the
+  same trip that were already known when the vehicle reached the target stop, so a model
+  trained on the export sees at training time what it will see at prediction time.
 """
 
 from __future__ import annotations
@@ -187,12 +187,9 @@ def _alert_counts(db: Session, route_ids: list[str], now: datetime) -> dict[str,
 TRAINING_SQL = text(
     """
     SELECT service_date, trip_id, line, stop_id, stop_seq,
-           scheduled_at, actual_at, delay_s AS target_delay_s,
-           LAG(delay_s, 1) OVER trip_order AS previous_stop_delay_s,
-           LAG(delay_s, 2) OVER trip_order AS delay_two_stops_back_s,
+           scheduled_at, actual_at, delay_s, gap_s,
            EXTRACT(EPOCH FROM scheduled_at - LAG(scheduled_at, 1) OVER trip_order)::int
-               AS scheduled_gap_s,
-           gap_s
+               AS scheduled_gap_s
     FROM stop_arrival_events
     WHERE service_date BETWEEN :start AND :end
     WINDOW trip_order AS (PARTITION BY service_date, trip_id ORDER BY stop_seq)
@@ -202,14 +199,45 @@ TRAINING_SQL = text(
 
 
 def export_training_rows(engine: Engine, start: date, end: date) -> Iterator[dict]:
-    """Recorded arrivals with features from earlier stops of the same trip only."""
+    """Recorded arrivals with features from earlier stops of the same trip only.
+
+    An earlier event is a feature only if it was known before the target arrival happened. An
+    event becomes known with the observation after the crossing, at the latest ``actual_at +
+    gap_s``; two stops crossed between the same pair of observations are interpolated from the
+    same later fix, so neither may be a feature of the other. ``features_known_at`` is when the
+    newest feature was known: the earliest moment such a prediction could have been made.
+    """
+    trip: tuple[date, str] | None = None
+    earlier: list[tuple[datetime, int]] = []  # (known at, delay) of the trip's previous events
     with engine.connect() as connection:
-        for row in connection.execute(TRAINING_SQL, {"start": start, "end": end}):
-            record = dict(row._mapping)
-            local = record["scheduled_at"].astimezone(TIMEZONE)
-            record["hour_local"] = local.hour
-            record["weekday"] = local.weekday()
-            yield record
+        result = connection.execution_options(stream_results=True).execute(
+            TRAINING_SQL, {"start": start, "end": end}
+        )
+        for row in result:
+            event = row._mapping
+            if (event["service_date"], event["trip_id"]) != trip:
+                trip, earlier = (event["service_date"], event["trip_id"]), []
+            usable = [item for item in earlier if item[0] <= event["actual_at"]]
+            local = event["scheduled_at"].astimezone(TIMEZONE)
+            yield {
+                "service_date": event["service_date"],
+                "trip_id": event["trip_id"],
+                "line": event["line"],
+                "stop_id": event["stop_id"],
+                "stop_seq": event["stop_seq"],
+                "scheduled_at": event["scheduled_at"],
+                "actual_at": event["actual_at"],
+                "target_delay_s": event["delay_s"],
+                "previous_stop_delay_s": usable[-1][1] if usable else None,
+                "delay_two_stops_back_s": usable[-2][1] if len(usable) > 1 else None,
+                "features_known_at": usable[-1][0] if usable else None,
+                "scheduled_gap_s": event["scheduled_gap_s"],
+                "gap_s": event["gap_s"],
+                "hour_local": local.hour,
+                "weekday": local.weekday(),
+            }
+            known_at = event["actual_at"] + timedelta(seconds=event["gap_s"])
+            earlier.append((known_at, event["delay_s"]))
 
 
 def write_jsonl(rows: Iterable[dict], handle) -> int:
