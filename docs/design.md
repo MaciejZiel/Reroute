@@ -205,7 +205,12 @@ class Predictor(Protocol):
 
 `BaselinePredictor` (persistence): predicted delay = current delay of the trip (0 when the
 vehicle is not matched), interval NULL. `PREDICTOR=module:Class` selects another implementation
-at startup, so a trained model is a new class plus a file, with no API changes.
+at startup. Without it `get_predictor()` looks for the model file (`DELAY_MODEL_FILE`, default
+`backend/models/delay_model.json`) and serves `app.ml.model.ModelPredictor` if the file's card says
+the model beat the baselines on held-out future data; `PREDICTOR=model` forces it. `FeatureRow`
+carries `model_inputs`, computed from recorded arrivals by `app/ml/featurize.py`, the same code
+that builds the training samples in `backend/ml`. The model, its evaluation and its limits are
+described in the README (Delay model).
 
 Endpoint contract (stub now, final shape):
 
