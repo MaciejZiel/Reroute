@@ -20,6 +20,7 @@ from .models import (
     DelaySnapshot,
     FeedMetadata,
     Route,
+    RouteStop,
     Stop,
 )
 from .schemas import (
@@ -71,6 +72,22 @@ def network(request: Request, db: Session = Depends(get_db)) -> Response:
     return Response(body, media_type="application/json", headers=headers)
 
 
+def _stop_modes(db: Session, is_demo: bool) -> dict[str, str]:
+    """Per stop: "bus", "tram" or "both", from the modes of the routes that call there."""
+    rows = db.execute(
+        select(RouteStop.stop_id, Route.mode)
+        .join(Route, Route.id == RouteStop.route_id)
+        .where(Route.is_demo.is_(is_demo))
+        .distinct()
+    ).all()
+    seen: dict[str, set[str]] = defaultdict(set)
+    for stop_id, mode in rows:
+        seen[stop_id].add(mode)
+    return {
+        stop_id: next(iter(found)) if len(found) == 1 else "both" for stop_id, found in seen.items()
+    }
+
+
 def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     demo_filter = not has_schedule
     routes = db.scalars(select(Route).where(Route.is_demo.is_(demo_filter))).all()
@@ -90,11 +107,12 @@ def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
         for route in routes
         if route.shape is not None
     ]
+    modes = _stop_modes(db, demo_filter)
     features.extend(
         _feature(
             stop.id,
             {"type": "Point", "coordinates": [stop.longitude, stop.latitude]},
-            {"entity_type": "stop", "name": stop.name},
+            {"entity_type": "stop", "name": stop.name, "mode": modes.get(stop.id, "bus")},
         )
         for stop in stops
     )
