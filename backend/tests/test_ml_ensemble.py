@@ -7,9 +7,8 @@ import pytest
 np = pytest.importorskip("numpy")
 lgb = pytest.importorskip("lightgbm")
 
-from ml.export import ensemble_from_booster  # noqa: E402
-
 from app.ml.ensemble import Ensemble  # noqa: E402
+from ml.export import ensemble_from_booster  # noqa: E402
 
 
 def _data(rows: int = 3000, seed: int = 3):

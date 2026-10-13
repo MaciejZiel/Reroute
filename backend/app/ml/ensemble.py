@@ -116,9 +116,7 @@ class Tree:
         self._recurse(
             hot, x, phi, path, incoming_zero * self.cover[hot] / cover, incoming_one, split
         )
-        self._recurse(
-            cold, x, phi, path, incoming_zero * self.cover[cold] / cover, 0.0, split
-        )
+        self._recurse(cold, x, phi, path, incoming_zero * self.cover[cold] / cover, 0.0, split)
 
 
 # A path element is [feature, zero_fraction, one_fraction, weight].
