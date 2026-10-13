@@ -145,6 +145,17 @@ class LineResponse(BaseModel):
     data_mode: Literal["live", "demo"]
 
 
+class Factor(BaseModel):
+    feature: str
+    effect_seconds: int = Field(description="Positive: later than the current delay alone implies")
+    text: str
+
+
+class Why(BaseModel):
+    summary: str
+    factors: list[Factor]
+
+
 class NextStop(BaseModel):
     stop_id: str
     name: str
@@ -152,6 +163,9 @@ class NextStop(BaseModel):
     scheduled_at: datetime
     predicted_at: datetime | None
     delay_seconds: int | None
+    lower_delay_seconds: int | None = None
+    upper_delay_seconds: int | None = None
+    why: Why | None = None
 
 
 class ModelInfo(BaseModel):
@@ -189,6 +203,7 @@ class PredictionItem(BaseModel):
     lower_delay_s: int | None
     upper_delay_s: int | None
     basis: Literal["live_delay", "scheduled"]
+    why: Why | None = None
 
 
 class PredictionsResponse(BaseModel):
