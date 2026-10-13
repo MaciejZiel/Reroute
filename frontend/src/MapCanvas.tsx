@@ -58,6 +58,14 @@ function sheetInset() {
   return window.innerWidth <= 820 ? Math.round(window.innerHeight * 0.46) : 0;
 }
 
+/** Space the search box and chips cover at the top of the map on a phone, where they span its width. */
+function overlayInset(container: HTMLElement | null) {
+  if (window.innerWidth > 820 || !container) return 90;
+  const overlay = container.closest(".map-stage")?.querySelector(".map-overlay");
+  if (!overlay) return 90;
+  return Math.max(90, Math.round(overlay.getBoundingClientRect().bottom - container.getBoundingClientRect().top) + 24);
+}
+
 export default function MapCanvas(props: MapCanvasProps) {
   const { network, vehicles, vehicleLook, showBuses, showTrams, focusLine, picked, selectedVehicleId, fit, flyTo } = props;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -241,7 +249,7 @@ export default function MapCanvas(props: MapCanvasProps) {
   useEffect(() => { const map = mapRef.current; if (map && ready.current) applyVehicleLook(map, vehicleLook); }, [vehicleLook]);
   useEffect(() => {
     const map = mapRef.current;
-    if (map && fit) map.fitBounds(fit.value, { padding: { top: 90, bottom: 70 + sheetInset(), left: 50, right: 50 }, maxZoom: 15, duration: 800 });
+    if (map && fit) map.fitBounds(fit.value, { padding: { top: overlayInset(containerRef.current), bottom: 70 + sheetInset(), left: 50, right: 50 }, maxZoom: 15, duration: 800 });
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs on the request nonce / data identity only
   }, [fit?.nonce]);
   useEffect(() => {
