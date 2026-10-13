@@ -186,6 +186,8 @@ The best baseline, chosen on the calibration window and not on the test window, 
 
 How far to trust these numbers: the bootstrap interval is sampling uncertainty inside this one window. It treats trips as independent, so it ignores shocks that hit the whole network at once, and it says nothing about other days. The test window was also looked at more than once while the pipeline was being built (features, the vehicle-delay input and the serving rules were changed after earlier evaluations), so it is not a pristine one-shot holdout. The rule for serving the model by default (at least 5% lower MAE than the best baseline with the bootstrap interval above zero) was written into the code at the start, but the history cannot prove that it was not adjusted; read it as a sanity gate for one window, not as evidence the model generalises. It passed, so the model is the default; had it failed, the file would still be trained and reported but `get_predictor()` would keep the baseline (the card inside the model file says `promoted: false`). The historical-median row is degenerate with one evening: the test hours hardly occur in the training window, so it collapses to a near-global median.
 
+**Frozen-model check.** `make ml-frozen` scores the committed model file unchanged (read by the same pure-Python evaluator the server uses, nothing refitted) on arrivals after its training window. Run on 2026-10-13 right after the model was built, the only later data was 17 minutes of the same evening (31,155 samples, 962 trips): MAE 34.8 s against 37.6 s for persistence, 7.4% lower (bootstrap interval 5.2% to 9.5%), 80% interval coverage 80.3%, so the margin held on those minutes. That is a sanity check, not evidence about other days; the full table is in [docs/ml/frozen_check.md](docs/ml/frozen_check.md). The command is there to be repeated whenever the collector has gathered a new day, before anyone retrains.
+
 ![MAE by horizon, model against persistence](docs/ml/mae_by_horizon.svg)
 
 **Explainability.** Global importance (mean absolute SHAP value on the test window) and partial dependence of the four strongest features, produced by the training command:
@@ -209,6 +211,7 @@ pip install -e 'backend[dev,ml]'        # LightGBM, NumPy, SciPy (training only)
 REROUTE_SSH="ssh -p 8022 user@server" make ml-pull   # or DATABASE_URL=... make ml-pull
 make ml-train                           # writes backend/models/delay_model.json and docs/ml/*
 make ml-test                            # includes: exported model reproduces LightGBM, SHAP and live inputs
+make ml-frozen                          # score the committed model, unchanged, on later data
 ```
 
 The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (default `backend/models/delay_model.json`). With nothing set the API serves the model only if its card says it was promoted; `PREDICTOR=model` forces it, `PREDICTOR=package.module:Class` selects another predictor. The version stamp (data date and a hash of the trees) is returned in every response as `model.version`. A migration adds a small BRIN index on `stop_arrival_events(actual_at)` so the live inputs (the last hour of arrivals of a few lines and stops) are cheap to read.
