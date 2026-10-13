@@ -19,6 +19,7 @@ from .train import Heads
 
 LABELS = {
     "stops_ahead": "stops ahead of the vehicle",
+    "seconds_since_origin": "time since the last recorded stop (s)",
     "origin_delay_s": "delay at the last stop (s)",
     "vehicle_delay_s": "delay reported by the vehicle now (s)",
     "vehicle_minus_origin_s": "delay change since the last stop (s)",
@@ -87,14 +88,14 @@ def write_plots(
     (out / "importance.svg").write_text(
         svg.horizontal_bars(
             "What the model relies on",
-            [(LABELS[n], v) for n, v in ranked[:10]],
+            [(LABELS.get(n, n), v) for n, v in ranked[:10]],
             "mean absolute SHAP value, seconds of delay change (test fold)",
         )
     )
     panels = []
     for name, _ in ranked[:4]:
         grid, effect = partial_dependence(heads, sample, name)
-        panels.append((LABELS[name], grid, effect))
+        panels.append((LABELS.get(name, name), grid, effect))
     (out / "partial_dependence.svg").write_text(
         svg.line_panels(
             "Average predicted delay change as one feature varies",
@@ -105,7 +106,7 @@ def write_plots(
     return {"importance": ranked}
 
 
-def model_document(heads: Heads, card: dict) -> dict:
+def model_document(heads: Heads, card: dict, serving_range: dict) -> dict:
     ensembles = {name: ensemble_from_booster(b).to_json() for name, b in heads.boosters.items()}
     digest = hashlib.sha256(json.dumps(ensembles, sort_keys=True).encode()).hexdigest()[:8]
     stamp = datetime.fromtimestamp(card["data"]["last_event_epoch"], UTC).strftime("%Y%m%d")
@@ -116,6 +117,7 @@ def model_document(heads: Heads, card: dict) -> dict:
         "target": "change of the delay between the latest recorded stop and the target stop, s",
         "interval": {"nominal": card["interval"]["nominal"], "conformal_shift_s": heads.shift_s},
         "card": card,
+        "serving_range": serving_range,
         "heads": ensembles,
     }
 

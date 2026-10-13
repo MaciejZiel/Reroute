@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from app.ml.featurize import MAX_ORIGIN_AGE_S, MAX_VEHICLE_AGE_S
+
 from . import dataset, evaluate, report, train
 
 
@@ -97,7 +99,15 @@ def run_train(args: argparse.Namespace) -> int:
             **evaluation,
         }
     )
-    document = report.model_document(heads, card)
+    serving_range = {
+        "max_stops_ahead": max(dataset.DEFAULT_LAGS),
+        "max_sched_run_s": float(
+            np.nanmax(parts["train"].X[:, dataset.FEATURE_NAMES.index("sched_run_s")])
+        ),
+        "max_origin_age_s": MAX_ORIGIN_AGE_S,
+        "max_vehicle_age_s": MAX_VEHICLE_AGE_S,
+    }
+    document = report.model_document(heads, card, serving_range)
     report.write_json(args.model_out, document, compact=True)
     report.write_json(args.report_dir / "report.json", card)
     ranked = report.write_plots(args.report_dir, heads, evaluation, test)

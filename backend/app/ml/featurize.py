@@ -3,8 +3,8 @@
 The same code builds training rows (``ml.dataset``) and live rows (``app.ml.live``), so a model
 sees identical definitions at training and at prediction time.
 
-A prediction is made at ``t0``, the moment the newest arrival of a trip became known: the
-*origin* is that arrival, the *target* is a later stop of the same trip. An arrival becomes known
+A prediction is made at ``t0`` (any moment): the *origin* is the newest arrival of the trip
+known by then, the *target* is a later stop of the same trip. An arrival becomes known
 with the observation after the crossing (``actual_at + gap_s``); nothing that became known after
 ``t0`` is ever used.
 """
@@ -24,6 +24,7 @@ NAN = math.nan
 
 FEATURE_NAMES: tuple[str, ...] = (
     "stops_ahead",
+    "seconds_since_origin",
     "origin_delay_s",
     "vehicle_delay_s",
     "vehicle_minus_origin_s",
@@ -44,6 +45,10 @@ TREND_WINDOW_S = 600
 LINE_WINDOW_S = 900
 STOP_WINDOW_S = 1800
 LEADER_WINDOW_S = 3600
+# The model is trained and evaluated only where a live prediction is also made: the vehicle's own
+# delay is fresh, and the last recorded stop is recent. Elsewhere the baseline answers.
+MAX_VEHICLE_AGE_S = 45.0
+MAX_ORIGIN_AGE_S = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +200,7 @@ def feature_vector(
     local = datetime.fromtimestamp(target.scheduled_s, TIMEZONE)
     return [
         float(target.stop_seq - origin.stop_seq),
+        t0 - origin.known_s,
         float(origin.delay_s),
         vehicle_delay_s,
         vehicle_delay_s - origin.delay_s,
