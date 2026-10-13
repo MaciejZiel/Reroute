@@ -47,6 +47,7 @@ def test_features_describe_the_origin_and_the_distance_to_the_target() -> None:
     got = features(trips(), "B", 2, 5)
     assert got["stops_ahead"] == 3
     assert got["origin_delay_s"] == 40 + 30
+    assert math.isnan(got["vehicle_delay_s"])
     assert got["prev_delay_change_s"] == 20
     assert got["sched_run_s"] == 9 * 60
     assert got["is_tram"] == 1  # line "9" is numbered below 100

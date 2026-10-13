@@ -50,7 +50,8 @@ def results_table(card: dict) -> str:
 def run_train(args: argparse.Namespace) -> int:
     events = dataset.load_events(args.events)
     print(f"{len(events)} arrivals, {len({e.trip_id for e in events})} trips", file=sys.stderr)
-    samples = dataset.build_samples(events)
+    observations = dataset.Observations.load(args.observations) if args.observations else None
+    samples = dataset.build_samples(events, observations=observations)
     folds = dataset.time_folds(events, tuple(args.fractions))
     assignment = folds.assign(samples)
     parts = {name: samples.take(assignment == i) for i, name in enumerate(dataset.FOLDS)}
@@ -84,6 +85,9 @@ def run_train(args: argparse.Namespace) -> int:
                 for i, name in enumerate(dataset.FOLDS)
             },
             "samples": len(samples),
+            "vehicle_delay_known_share": float(
+                1 - np.isnan(samples.X[:, dataset.FEATURE_NAMES.index("vehicle_delay_s")]).mean()
+            ),
             "dropped_straddling_a_boundary": dropped,
             "lags_in_stops": list(dataset.DEFAULT_LAGS),
             "features": heads.features,
@@ -115,6 +119,9 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     fit = commands.add_parser("train", help="train, evaluate and export a model")
     fit.add_argument("--events", type=Path, required=True, help="CSV from ml/pull.sh")
+    fit.add_argument(
+        "--observations", type=Path, help="CSV from ml/pull.sh: the vehicles' reported delays"
+    )
     fit.add_argument("--model-out", type=Path, default=Path("models/delay_model.json"))
     fit.add_argument("--report-dir", type=Path, default=Path("../docs/ml"))
     fit.add_argument(

@@ -138,7 +138,9 @@ def _with_model_inputs(
     )
     return [
         replace(row, model_inputs=inputs)
-        for row, inputs in zip(rows, model_inputs(index, specs, now), strict=True)
+        for row, inputs in zip(
+            rows, model_inputs(index, specs, now, [t.current_delay_s for t in targets]), strict=True
+        )
     ]
 
 

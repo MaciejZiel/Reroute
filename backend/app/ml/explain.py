@@ -47,6 +47,12 @@ def _plural(n: int, word: str) -> str:
 
 _PHRASES: dict[str, Callable[[float], str]] = {
     "stops_ahead": lambda v: f"the stop is {_plural(round(v), 'stop')} ahead",
+    "vehicle_delay_s": lambda v: f"the vehicle is {delay_phrase(v)} right now",
+    "vehicle_minus_origin_s": lambda v: (
+        f"its delay grew by {duration(v)} since the last stop"
+        if v > 0
+        else f"it has made up {duration(v)} since the last stop"
+    ),
     "origin_delay_s": lambda v: f"the vehicle was {delay_phrase(v)} at its last stop",
     "prev_delay_change_s": lambda v: (
         f"its delay grew by {duration(v)} at the last stop"

@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -25,6 +25,8 @@ NAN = math.nan
 FEATURE_NAMES: tuple[str, ...] = (
     "stops_ahead",
     "origin_delay_s",
+    "vehicle_delay_s",
+    "vehicle_minus_origin_s",
     "prev_delay_change_s",
     "trend_s_per_min",
     "sched_run_s",
@@ -162,14 +164,25 @@ def known_trip_events(index: EventIndex, trip_id: str, t0: float) -> list[Event]
     return [e for e in index.by_trip.get(trip_id, ()) if e.known_s <= t0]
 
 
+def base_delay(values: Mapping[str, float]) -> float:
+    """The delay the model adds its predicted change to: the vehicle's latest reported delay,
+    or the delay at its latest recorded stop when no live delay is known."""
+    live = values.get("vehicle_delay_s", NAN)
+    return live if not math.isnan(live) else values["origin_delay_s"]
+
+
 def feature_vector(
     index: EventIndex,
     target: TargetStop,
     origin: Event,
     t0: float,
     trip_known: Sequence[Event] | None = None,
+    vehicle_delay_s: float = NAN,
 ) -> list[float]:
-    """Feature values in ``FEATURE_NAMES`` order for predicting ``target`` from ``origin``."""
+    """Feature values in ``FEATURE_NAMES`` order for predicting ``target`` from ``origin``.
+
+    ``vehicle_delay_s`` is the delay the vehicle itself reported at ``t0`` (NaN if unknown); it is
+    fresher than the delay at the last stop by up to one polling gap."""
     known = trip_known if trip_known is not None else known_trip_events(index, origin.trip_id, t0)
     earlier = [event for event in known if event.stop_seq < origin.stop_seq]
     change = origin.delay_s - earlier[-1].delay_s if earlier else NAN
@@ -183,6 +196,8 @@ def feature_vector(
     return [
         float(target.stop_seq - origin.stop_seq),
         float(origin.delay_s),
+        vehicle_delay_s,
+        vehicle_delay_s - origin.delay_s,
         float(change),
         trend(sorted(recent)),
         target.scheduled_s - origin.scheduled_s,

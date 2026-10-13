@@ -59,7 +59,7 @@ class NaiveInterval:
     def predict(self, samples: Samples) -> tuple[np.ndarray, np.ndarray]:
         low = np.array([self.q[int(k)][0] for k in samples.lag])
         high = np.array([self.q[int(k)][1] for k in samples.lag])
-        return samples.origin_delay + low, samples.origin_delay + high
+        return samples.base_delay + low, samples.base_delay + high
 
 
 def evaluate(

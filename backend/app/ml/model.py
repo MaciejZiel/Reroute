@@ -16,6 +16,7 @@ from ..features import FeatureRow
 from ..predict import BaselinePredictor, Prediction
 from .ensemble import Ensemble
 from .explain import explain
+from .featurize import base_delay
 
 FORMAT = 1
 
@@ -42,7 +43,7 @@ class DelayModel:
 
     def predict_one(self, inputs: dict[str, float], with_reasons: bool = True) -> Prediction:
         x = self.vector(inputs)
-        origin = inputs["origin_delay_s"]
+        origin = base_delay(inputs)
         change = self.heads["median"].predict(x)
         median = origin + change
         lower = min(origin + self.heads["lower"].predict(x), median) - self.shift_s
@@ -60,6 +61,9 @@ class ModelPredictor:
     """Serves a ``DelayModel``. Trips without a recorded stop yet fall back to persistence."""
 
     kind = "model"
+    # Exact SHAP values cost a few milliseconds on a laptop and much more on a small server, and
+    # the interface shows one reason: only the first rows of a request carry an explanation.
+    EXPLAIN_FIRST = 3
 
     def __init__(self, model: DelayModel, name: str = "gbt-delay") -> None:
         self.model = model
@@ -69,7 +73,14 @@ class ModelPredictor:
 
     def predict(self, rows: Sequence[FeatureRow]) -> list[Prediction]:
         fallback = self._fallback.predict(rows)
-        return [
-            self.model.predict_one(dict(row.model_inputs)) if row.model_inputs else plain
-            for row, plain in zip(rows, fallback, strict=True)
-        ]
+        result = []
+        explained = 0
+        for row, plain in zip(rows, fallback, strict=True):
+            if not row.model_inputs:
+                result.append(plain)
+                continue
+            result.append(
+                self.model.predict_one(dict(row.model_inputs), explained < self.EXPLAIN_FIRST)
+            )
+            explained += 1
+        return result

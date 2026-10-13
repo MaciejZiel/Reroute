@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
@@ -66,20 +67,26 @@ def load_index(
 
 
 def model_inputs(
-    index: EventIndex, targets: Sequence[TargetStop], now: datetime
+    index: EventIndex,
+    targets: Sequence[TargetStop],
+    now: datetime,
+    vehicle_delays: Sequence[float | None] | None = None,
 ) -> list[dict[str, float] | None]:
     """Feature values per target as of ``now``; None when the trip has no recorded stop yet or
     the target stop has already been passed."""
     t0 = now.timestamp()
     known_by_trip: dict[str, list[Event]] = {}
     result: list[dict[str, float] | None] = []
-    for target in targets:
+    for number, target in enumerate(targets):
+        live = vehicle_delays[number] if vehicle_delays else None
         known = known_by_trip.setdefault(
             target.trip_id, known_trip_events(index, target.trip_id, t0)
         )
         if not known or known[-1].stop_seq >= target.stop_seq:
             result.append(None)
             continue
-        values = feature_vector(index, target, known[-1], t0, known)
+        values = feature_vector(
+            index, target, known[-1], t0, known, math.nan if live is None else float(live)
+        )
         result.append(dict(zip(FEATURE_NAMES, values, strict=True)))
     return result

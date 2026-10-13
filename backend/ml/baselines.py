@@ -45,7 +45,7 @@ def persistence(samples: Samples) -> np.ndarray:
             route_mean_delay_s=None,
             active_alerts=0,
         )
-        for delay in samples.origin_delay
+        for delay in samples.base_delay
     ]
     return np.array([p.predicted_delay_s for p in predictor.predict(rows)], dtype=float)
 
@@ -93,10 +93,10 @@ class DampedPersistence:
         self.coefficients: dict[int, tuple[float, float]] = {}
         for lag in np.unique(train.lag):
             mask = train.lag == lag
-            slope, intercept = np.polyfit(train.origin_delay[mask], train.y_delay[mask], 1)
+            slope, intercept = np.polyfit(train.base_delay[mask], train.y_delay[mask], 1)
             self.coefficients[int(lag)] = (float(intercept), float(slope))
 
     def predict(self, samples: Samples) -> np.ndarray:
         a = np.array([self.coefficients[int(lag)][0] for lag in samples.lag])
         b = np.array([self.coefficients[int(lag)][1] for lag in samples.lag])
-        return a + b * samples.origin_delay
+        return a + b * samples.base_delay

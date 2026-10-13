@@ -20,6 +20,8 @@ from .train import Heads
 LABELS = {
     "stops_ahead": "stops ahead of the vehicle",
     "origin_delay_s": "delay at the last stop (s)",
+    "vehicle_delay_s": "delay reported by the vehicle now (s)",
+    "vehicle_minus_origin_s": "delay change since the last stop (s)",
     "prev_delay_change_s": "delay change at the last stop (s)",
     "trend_s_per_min": "delay trend (s per min)",
     "sched_run_s": "scheduled running time left (s)",

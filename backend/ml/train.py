@@ -48,7 +48,7 @@ class Heads:
     def predict(self, samples: Samples) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Median, lower and upper bound of the delay at the target stop, seconds."""
         x = samples.X[:, self.columns()]
-        base = samples.origin_delay
+        base = samples.base_delay
         median = base + self.boosters["median"].predict(x)
         lower = np.minimum(base + self.boosters["lower"].predict(x), median) - self.shift_s
         upper = np.maximum(base + self.boosters["upper"].predict(x), median) + self.shift_s

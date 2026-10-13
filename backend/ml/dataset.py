@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import csv
+import math
+from bisect import bisect_right
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -72,8 +75,15 @@ class Samples:
         return self.X[:, FEATURE_NAMES.index("origin_delay_s")]
 
     @property
+    def base_delay(self) -> np.ndarray:
+        """What persistence predicts and what the model adds its change to: the vehicle's own
+        latest delay where one was reported, else the delay at the last recorded stop."""
+        live = self.X[:, FEATURE_NAMES.index("vehicle_delay_s")]
+        return np.where(np.isnan(live), self.origin_delay, live)
+
+    @property
     def residual(self) -> np.ndarray:
-        return self.y_delay - self.origin_delay
+        return self.y_delay - self.base_delay
 
     def take(self, mask: np.ndarray) -> Samples:
         idx = np.flatnonzero(mask)
@@ -90,7 +100,43 @@ class Samples:
         )
 
 
-def build_samples(events: Sequence[Event], lags: Sequence[int] = DEFAULT_LAGS) -> Samples:
+class Observations:
+    """Delays the vehicles themselves reported, to look up the latest one at a moment in time."""
+
+    MAX_AGE_S = 60.0
+
+    def __init__(self, rows: dict[str, tuple[list[float], list[int]]]) -> None:
+        self.rows = rows
+
+    @classmethod
+    def load(cls, path: Path) -> Observations:
+        """Read the CSV written by ``ml/pull.sh`` (trip_id, observed_at, delay_s)."""
+        rows: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
+        with open(path, newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                times, delays = rows[row["trip_id"]]
+                times.append(datetime.fromisoformat(row["observed_at"]).timestamp())
+                delays.append(int(row["delay_s"]))
+        return cls(dict(rows))
+
+    def latest(self, trip_id: str, moment: float) -> float:
+        """Delay of the newest observation of the trip at or before ``moment`` (NaN if none is
+        less than a minute old)."""
+        series = self.rows.get(trip_id)
+        if series is None:
+            return math.nan
+        times, delays = series
+        i = bisect_right(times, moment + 1.0) - 1
+        if i < 0 or moment - times[i] > self.MAX_AGE_S:
+            return math.nan
+        return float(delays[i])
+
+
+def build_samples(
+    events: Sequence[Event],
+    lags: Sequence[int] = DEFAULT_LAGS,
+    observations: Observations | None = None,
+) -> Samples:
     """Simulate a prediction at the moment each arrival became known.
 
     For every recorded arrival (the origin) whose trip has no later arrival known yet, each
@@ -116,7 +162,8 @@ def build_samples(events: Sequence[Event], lags: Sequence[int] = DEFAULT_LAGS) -
                 spec = TargetStop(
                     trip_id, target.stop_seq, target.stop_id, target.line, target.scheduled_s
                 )
-                rows.append(feature_vector(index, spec, origin, t0, known))
+                live = observations.latest(trip_id, t0) if observations else math.nan
+                rows.append(feature_vector(index, spec, origin, t0, known, live))
                 y.append(target.delay_s)
                 t0s.append(t0)
                 target_times.append(target.actual_s)

@@ -100,3 +100,25 @@ def test_end_to_end_training_exports_a_model_the_server_side_code_reproduces(tmp
         assert math.isclose(sum(phi) + bias, model.heads["median"].predict(x), abs_tol=1e-6)
     assert json.loads(path.read_text())["card"]["promoted"] in (True, False)
     assert ModelPredictor(model).kind == "model"
+
+
+def test_vehicle_delay_is_looked_up_at_the_prediction_moment_and_never_from_later() -> None:
+    obs = dataset.Observations({"T": ([100.0, 120.0, 140.0], [10, 20, 30])})
+    assert obs.latest("T", 125.0) == 20  # the newest observation at or before the moment
+    assert math.isnan(obs.latest("T", 98.0))  # nothing observed yet
+    assert math.isnan(obs.latest("T", 400.0))  # too old to be "now"
+    assert math.isnan(obs.latest("other", 125.0))
+
+
+def test_the_base_of_the_prediction_is_the_vehicle_delay_when_known() -> None:
+    events = synthetic_events(30)
+    observations = dataset.Observations(
+        {
+            trip: ([e.known_s for e in events if e.trip_id == trip], [999] * 14)
+            for trip in {e.trip_id for e in events}
+        }
+    )
+    with_live = dataset.build_samples(events, observations=observations)
+    without = dataset.build_samples(events)
+    assert np.all(with_live.base_delay == 999)
+    assert np.allclose(without.base_delay, without.origin_delay)
