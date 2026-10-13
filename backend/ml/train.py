@@ -20,7 +20,7 @@ SMALL_DATA_EXCLUDED = (*CALENDAR_FEATURES, "stop_seq")
 
 PARAMS = {
     "num_leaves": 15,
-    "learning_rate": 0.05,
+    "learning_rate": 0.1,
     "min_data_in_leaf": 200,
     "feature_fraction": 0.8,
     "bagging_fraction": 0.7,

@@ -147,7 +147,7 @@ def test_the_api_serves_the_model_with_an_interval_and_reasons(
     first = body["predictions"][0]
     assert first["stop_id"] == "200101" and first["basis"] == "live_delay"
     assert first["lower_delay_s"] <= first["predicted_delay_s"] <= first["upper_delay_s"]
-    assert first["why"]["summary"].startswith("Expected")
+    assert first["why"]["summary"].startswith("Now")
     assert all(isinstance(f["effect_seconds"], int) and f["text"] for f in first["why"]["factors"])
 
     vehicle = client.get("/api/vehicles/V/9/2").json()

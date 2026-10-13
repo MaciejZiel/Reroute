@@ -95,6 +95,7 @@ def test_explanations_are_sorted_by_effect_and_ignore_noise() -> None:
     why = explain(names, [300.0, 3.0, 120.0, 1.0], [40.0, -12.0, 2.0, 1.0], 120.0, 160.0)
     assert [f.feature for f in why.factors] == ["leader_delay_s", "stops_ahead"]
     assert "5 min late" in why.factors[0].text
-    assert why.summary.startswith("Expected 2 min 40 s late at this stop, mostly because")
+    assert why.summary.startswith("Now 2 min late; expected 2 min 40 s late at this stop. Main")
+    assert "(+40 s)" in why.summary and "(-12 s)" in why.summary
     quiet = explain(names, [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], 0.0, 0.0)
     assert quiet.factors == () and "no strong signal" in quiet.summary

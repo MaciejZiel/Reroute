@@ -65,7 +65,7 @@ def grouped_bars(
 
 
 def horizontal_bars(title: str, items: list[tuple[str, float]], unit: str) -> str:
-    width, row, left, top = 640, 26, 190, 44
+    width, row, left, top = 640, 26, 250, 44
     peak = max(v for _, v in items) * 1.15 or 1
     height = top + row * len(items) + 30
     body = []
@@ -83,7 +83,7 @@ def horizontal_bars(title: str, items: list[tuple[str, float]], unit: str) -> st
 
 def line_panels(title: str, panels: list[tuple[str, list[float], list[float]]], unit: str) -> str:
     """A grid of small line charts sharing one y scale: (feature, x grid, effect in seconds)."""
-    cols, cw, ch, top, left = 2, 300, 150, 44, 44
+    cols, cw, ch, top, left = 2, 300, 150, 62, 44
     rows = (len(panels) + cols - 1) // cols
     width, height = cols * (cw + 20) + 20, top + rows * (ch + 46) + 24
     lo = min(min(ys) for _, _, ys in panels)

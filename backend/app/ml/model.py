@@ -63,7 +63,7 @@ class ModelPredictor:
     kind = "model"
     # Exact SHAP values cost a few milliseconds on a laptop and much more on a small server, and
     # the interface shows one reason: only the first rows of a request carry an explanation.
-    EXPLAIN_FIRST = 3
+    EXPLAIN_FIRST = 1
 
     def __init__(self, model: DelayModel, name: str = "gbt-delay") -> None:
         self.model = model

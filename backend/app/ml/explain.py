@@ -97,13 +97,12 @@ def explain(
         factors.append(Factor(name, round(effect), text))
         if len(factors) == MAX_FACTORS:
             break
-    start = f"Expected {delay_phrase(predicted_delay_s)} at this stop"
+    now = f"Now {delay_phrase(origin_delay_s)}; expected {delay_phrase(predicted_delay_s)}"
     if not factors:
-        return Explanation(f"{start}: no strong signal beyond the current delay.", ())
-    lead = factors[0]
-    why = lead.text[0].lower() + lead.text[1:]
-    direction = "later" if lead.effect_s > 0 else "earlier"
-    return Explanation(
-        f"{start}, mostly because {why} (about {duration(lead.effect_s)} {direction}).",
-        tuple(factors),
-    )
+        return Explanation(f"{now} at this stop, no strong signal beyond the current delay.", ())
+    main = "; ".join(f"{_lower(f.text)} ({f.effect_s:+d} s)" for f in factors[:2])
+    return Explanation(f"{now} at this stop. Main factors: {main}.", tuple(factors))
+
+
+def _lower(text: str) -> str:
+    return text if text.startswith("of ") else text[0].lower() + text[1:]
