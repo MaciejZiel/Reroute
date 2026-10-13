@@ -1,6 +1,10 @@
 # Reroute
 
-**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?** Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival so a delay-prediction model can be trained later.
+**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?**
+
+**[Live demo](https://reroute.maciejzielinski.dev)** · [Status](https://status.maciejzielinski.dev) · [Portfolio](https://maciejzielinski.dev)
+
+Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival. The machine-learning delay model that will use that data is the next step; it is not built yet.
 
 [![CI](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -8,11 +12,17 @@
 ![FastAPI + PostGIS](https://img.shields.io/badge/FastAPI-PostGIS-009688.svg)
 ![React + MapLibre](https://img.shields.io/badge/React-MapLibre-3178c6.svg)
 
-![The calm default view: a muted dark basemap, quiet route lines and no vehicles until you ask for them](docs/screenshots/overview.png)
+[![Tram line 24 selected from Rondo Daszyńskiego: route, stops, live vehicles and departures with delays](docs/screenshots/line.png)](https://reroute.maciejzielinski.dev)
+
+## Status and self-hosting
+
+- **Live now:** the map, departures with delays estimated from live positions, line and vehicle views and the per-line punctuality view, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
+- **Self-hosted:** the public instance runs on a home server, not on a cloud platform.
+- **Next step, not built yet:** a machine-learning model that predicts delays. The data for it is already being collected: vehicle observations and derived stop arrivals are stored continuously, and raw feed snapshots are archived. Until a model exists, `/api/predictions` simply assumes the current delay persists.
 
 ## What it does
 
-- **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On a phone the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
+- **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On narrow screens the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
 - **Quiet by default.** No vehicles are drawn until you pick a line. A single switch, "Show all vehicles" (off by default), draws the whole fleet as small unlabelled dots for those who want the city-wide picture; names appear only when zoomed in.
 - **Stop panel.** Search by name (diacritics-insensitive) or zoom in and click a stop; see all lines at the station with their next timetable departures. Departures with a matched live vehicle show the delay and the expected time; late vehicles stay listed until they pass, vehicles that already passed disappear.
 - **Mode-aware stop icons.** Bus stops are mint, tram stops coral and stops served by both are split; a small glyph says which. Stops are hidden at city zoom (the route lines carry the overview), thin out by collision as you zoom in, get names from zoom 16 and the selected station is highlighted in gold with a single label.
@@ -20,26 +30,14 @@
 - **Vehicle detail.** Click a vehicle: delay against the timetable, status (waiting at the first stop, off route, stale position) and the next stops with scheduled and expected times.
 - **Delay colours.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
 - **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes.
-- **Bilingual, responsive UI** (Polish and English; on a phone the panel sits under the map).
-- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists).
+- **Bilingual, responsive UI** (Polish and English; on narrow screens the panel sits under the map).
+- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists; the ML model is the next step).
 
-| All vehicles (switch on) | Stop selected |
+| Stop selected | Mobile: stop and line |
 | --- | --- |
-| ![The whole fleet as small dots, no labels at city zoom](docs/screenshots/all-vehicles.png) | ![Centrum station highlighted with mode-aware stop icons and the lines serving it](docs/screenshots/stop.png) |
+| ![Rondo Daszyńskiego station with the lines serving it and their next departures](docs/screenshots/stop.png) | ![Line 24 selected on a 400 px wide screen, with the bottom sheet under the map](docs/screenshots/mobile-line.png) |
 
-| Line focus | Only vehicles heading to my stop |
-| --- | --- |
-| ![Tram 18: route, stops and all of its live vehicles](docs/screenshots/line.png) | ![The same line limited to the vehicles that still have to reach the selected stop](docs/screenshots/line-heading.png) |
-
-| Vehicle detail | Punctuality (secondary view) |
-| --- | --- |
-| ![A tram with its delay against the timetable and next stops](docs/screenshots/vehicle.png) | ![Share of early, on-time and late vehicles per line and a delay trend](docs/screenshots/punctuality.png) |
-
-| Phone: stop | Phone: line |
-| --- | --- |
-| ![Bottom sheet over the map with the lines at the stop](docs/screenshots/mobile-stop.png) | ![Line focus with the bottom sheet at half height](docs/screenshots/mobile-line.png) |
-
-Screenshots are from the live Warsaw data on 13 October 2026, taken with `playwright-cli` against a local run.
+Screenshots are of the live deployment, taken with `playwright-cli` on 13 October 2026 at 1440 px and 400 px widths.
 
 ## Architecture
 
