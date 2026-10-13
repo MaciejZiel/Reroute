@@ -113,7 +113,9 @@ def build_samples(events: Sequence[Event], lags: Sequence[int] = DEFAULT_LAGS) -
                 lag = target.stop_seq - origin.stop_seq
                 if lag not in wanted or target.actual_s <= t0:
                     continue
-                spec = TargetStop(trip_id, target.stop_seq, target.stop_id, target.line, target.scheduled_s)
+                spec = TargetStop(
+                    trip_id, target.stop_seq, target.stop_id, target.line, target.scheduled_s
+                )
                 rows.append(feature_vector(index, spec, origin, t0, known))
                 y.append(target.delay_s)
                 t0s.append(t0)
