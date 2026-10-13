@@ -90,7 +90,7 @@ docker compose run --rm -v ~/reroute-data/raw:/raw collector python -m app.colle
 
 Export training rows for a model: `python -m app.features export --from 2026-10-13 --to 2026-10-20 --out rows.jsonl`. The delay model is trained from the arrival table directly, see [Delay model](#delay-model); `PREDICTOR=package.module:ClassName` still plugs in any other predictor (see `backend/app/predict.py`).
 
-Schema changes are plain SQL files in `backend/app/migrations/`, applied at start-up and by `python -m app.migrate`.
+Schema changes are plain SQL files in `backend/app/migrations/`, applied at start-up and by `python -m app.migrate`. The one exception is the BRIN index on `stop_arrival_events(actual_at)` that the delay model's live inputs use: it is built by `app.migrate` in code, per partition and `CONCURRENTLY`, so the collector keeps writing while it builds (checked with 4 million rows and inserts running: longest insert 25 ms). Roll it back with `python -m app.migrate --drop-arrival-time-index`.
 
 ## Deployment on a small server
 
