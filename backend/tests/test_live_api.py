@@ -11,11 +11,12 @@ from shapely.geometry import LineString, Point
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from app import live, predict
+from app import api, live, predict
 from app.collector import store
 from app.database import get_db
 from app.main import app
 from app.models import (
+    DelaySnapshot,
     PatternStop,
     Route,
     RouteStop,
@@ -479,3 +480,66 @@ def test_network_marks_each_stop_with_the_modes_that_serve_it(client: TestClient
     assert modes["100102"] == "bus"
     assert modes["300101"] == "both"
     assert modes["999901"] == "bus"  # no route calls there: falls back to bus
+
+
+def _snapshots(
+    db: Session, now: datetime, minutes: int, lines: tuple[str, ...], vehicles: int = 4
+) -> None:
+    minute = now.replace(second=0, microsecond=0)
+    db.add_all(
+        DelaySnapshot(
+            observed_at=minute - timedelta(minutes=age),
+            line=line,
+            mode="bus",
+            vehicles=vehicles,
+            mean_delay_seconds=120,
+            median_delay_seconds=90,
+            early=1,
+            on_time=2,
+            late=1,
+        )
+        for age in range(minutes)
+        for line in lines
+    )
+    db.commit()
+
+
+@pytest.fixture
+def punctuality_client(client: TestClient) -> Iterator[TestClient]:
+    api._punctuality_cache.clear()
+    yield client
+    api._punctuality_cache.clear()
+
+
+def test_punctuality_window_is_capped_and_long_windows_are_bucketed(
+    punctuality_client: TestClient, db: Session
+) -> None:
+    _snapshots(db, datetime.now(UTC), 360, ("9", "175"))
+    assert punctuality_client.get("/api/punctuality?minutes=1440").status_code == 422
+
+    short = punctuality_client.get("/api/punctuality?minutes=30").json()
+    long = punctuality_client.get("/api/punctuality?minutes=360").json()
+
+    by_line = {line["line"]: line for line in short["lines"]}
+    assert len(by_line["9"]["series"]) in (30, 31)  # one point per stored minute
+    assert by_line["9"]["mean_delay_minutes"] == 2.0
+    long_line = {line["line"]: line for line in long["lines"]}["9"]
+    assert 70 <= len(long_line["series"]) <= 73  # five-minute steps
+    assert long_line["observations"] == 4 * 360
+    assert long_line["series"][1]["vehicles"] == 4
+    assert long_line["on_time_share"] == 0.5
+    assert long["snapshots"] == 360
+
+
+def test_punctuality_answer_is_cached_for_a_minute(
+    punctuality_client: TestClient, db: Session
+) -> None:
+    now = datetime.now(UTC)
+    _snapshots(db, now, 20, ("9",))
+    first = punctuality_client.get("/api/punctuality?minutes=60").json()
+    _snapshots(db, now - timedelta(minutes=30), 5, ("175",))
+    again = punctuality_client.get("/api/punctuality?minutes=60").json()
+    assert again == first  # served from the cache
+    api._punctuality_cache.clear()
+    fresh = punctuality_client.get("/api/punctuality?minutes=60").json()
+    assert {line["line"] for line in fresh["lines"]} == {"9", "175"}
