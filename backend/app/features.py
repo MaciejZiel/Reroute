@@ -127,6 +127,8 @@ def _with_model_inputs(
     from .ml.featurize import TargetStop
     from .ml.live import load_index, model_inputs
 
+    if not any(t.current_delay_s is not None for t in targets):
+        return rows  # no live vehicle among them: the baseline answers all, nothing to load
     specs = [
         TargetStop(t.trip_id, t.stop_seq, t.stop_id, t.line, t.scheduled_at.timestamp())
         for t in targets

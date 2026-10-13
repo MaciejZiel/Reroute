@@ -180,8 +180,20 @@ def _age(vehicle: LiveVehicle | None, now: datetime) -> float | None:
     return (now - vehicle.observed_at).total_seconds() if vehicle else None
 
 
-def _predict(
+def explain_first(
     db: Session, candidates: list[Candidate], lines: dict[str, str], now: datetime
+) -> None:
+    """Recompute the predictions of exactly these candidates and attach the reasons to the first
+    the model answers: the entry a reader sees at the top, not one picked before sorting."""
+    _predict(db, candidates, lines, now, explain=True)
+
+
+def _predict(
+    db: Session,
+    candidates: list[Candidate],
+    lines: dict[str, str],
+    now: datetime,
+    explain: bool = False,
 ) -> None:
     predictor = get_predictor()
     targets = [
@@ -207,7 +219,9 @@ def _predict(
         with_history=predictor.kind != "baseline",
         with_model_inputs=predictor.kind == "model",
     )
-    for candidate, prediction in zip(candidates, predictor.predict(rows), strict=True):
+    for candidate, prediction in zip(
+        candidates, predictor.predict(rows, explain=explain), strict=True
+    ):
         candidate.prediction = prediction
 
 

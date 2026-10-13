@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -82,26 +83,49 @@ class ModelPredictor:
     stops) the baseline does, so the model never shows a number it was not tested for."""
 
     kind = "model"
-    # Exact SHAP values cost a few milliseconds on a laptop and much more on a small server, and
-    # the interface shows one reason: only the first rows of a request carry an explanation.
-    EXPLAIN_FIRST = 1
+    # Exact SHAP values cost tens of milliseconds on a laptop and far more on a small server, and
+    # the interface shows one reason: at most one prediction per request is explained, only when
+    # asked, and the result is kept for a few seconds for the next poll of the same vehicle.
+    CACHE_SECONDS = 20.0
+    CACHE_SIZE = 256
 
     def __init__(self, model: DelayModel, name: str = "gbt-delay") -> None:
         self.model = model
         self.name = name
         self.version = model.version
         self._fallback = BaselinePredictor()
+        self._explained: dict[tuple, tuple[float, Prediction]] = {}
 
-    def predict(self, rows: Sequence[FeatureRow]) -> list[Prediction]:
+    def _cached_explained(self, inputs: dict[str, float]) -> Prediction:
+        # The fractional seconds since the last stop do not change the reasons within the TTL.
+        key = tuple(
+            None if math.isnan(v) else round(v, 1)
+            for name, v in inputs.items()
+            if name != "seconds_since_origin"
+        )
+        now = time.monotonic()
+        hit = self._explained.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+        prediction = self.model.predict_one(inputs, True)
+        if len(self._explained) >= self.CACHE_SIZE:
+            self._explained = {k: v for k, v in self._explained.items() if v[0] > now}
+            if len(self._explained) >= self.CACHE_SIZE:
+                self._explained.clear()
+        self._explained[key] = (now + self.CACHE_SECONDS, prediction)
+        return prediction
+
+    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
         fallback = self._fallback.predict(rows)
         result = []
-        explained = 0
+        explained = False
         for row, plain in zip(rows, fallback, strict=True):
             if not row.model_inputs or not self.model.in_range(row.model_inputs):
                 result.append(plain)
                 continue
-            result.append(
-                self.model.predict_one(dict(row.model_inputs), explained < self.EXPLAIN_FIRST)
-            )
-            explained += 1
+            if explain and not explained:
+                result.append(self._cached_explained(dict(row.model_inputs)))
+                explained = True
+            else:
+                result.append(self.model.predict_one(dict(row.model_inputs), False))
         return result

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .api import DEMO_NOTICE, _vehicle_notice
 from .database import get_db
-from .departures import Candidate, by_route, trip_stops, upcoming
+from .departures import Candidate, by_route, explain_first, trip_stops, upcoming
 from .features import Target, live_feature_rows
 from .live import LiveVehicle, fallback_error, snapshot, vehicle_by_id, vehicles_of_trips
 from .models import Route, RouteStop, Stop, TripSchedule, VehiclePosition
@@ -363,7 +363,9 @@ def vehicle_detail(vehicle_id: str, db: DbSession) -> VehicleDetail:
                 with_history=predictor.kind != "baseline",
                 with_model_inputs=predictor.kind == "model",
             )
-            for stop, prediction in zip(upcoming_stops, predictor.predict(rows), strict=True):
+            for stop, prediction in zip(
+                upcoming_stops, predictor.predict(rows, explain=True), strict=True
+            ):
                 live = prediction.basis == "live_delay"
                 next_stops.append(
                     NextStop(
@@ -427,6 +429,8 @@ def predictions(
         modes = {route_id: mode for route_id, _, _, mode in lines_at(db, [stop.id], is_demo)}
         candidates = upcoming(db, [stop], now, line_names=names)
         candidates.sort(key=lambda item: item.expected_at)
+        if predictor.kind == "model":
+            explain_first(db, candidates[:limit], names, now)
         for candidate in candidates[:limit]:
             prediction = candidate.prediction or Prediction(0)
             items.append(
@@ -468,7 +472,7 @@ def predictions(
         rows = live_feature_rows(
             db, targets, now, with_history=True, with_model_inputs=predictor.kind == "model"
         )
-        for stop, prediction in zip(stops, predictor.predict(rows), strict=True):
+        for stop, prediction in zip(stops, predictor.predict(rows, explain=True), strict=True):
             items.append(
                 _item(
                     trip.trip_id,
