@@ -234,8 +234,8 @@ the model arrives. A `prediction_log(predicted_at, trip_id, stop_id, model_versi
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/stops?q=&limit=` | name search (trigram-free: prefix/contains on a normalised, diacritics-folded `name_search` column + index) |
-| `GET /api/stops/{id}/departures?limit=` | lines at the stop, each with next departures (scheduled, live delay/ETA when a vehicle of the trip is matched); `at=` for tests |
+| `GET /api/stops?q=&limit=` | name search over an in-memory index of the ~7k stops (rebuilt per import), case and diacritics folded, prefix matches first; results are *stations*: platforms with the same name within 400 m |
+| `GET /api/stops/{id}/departures?scope=&per_line=&horizon_minutes=` | `scope=station` (default) covers all platforms of the stop, `platform` only the clicked one; lines at the stop, each with next departures (scheduled, live delay/ETA when a vehicle of the trip is matched); `at=` for tests |
 | `GET /api/lines/{line}` | route shapes (per direction) and stops of the line |
 | `GET /api/lines/{line}/vehicles` | live vehicles of the line with delay and next stops |
 | `GET /api/vehicles` | all live vehicles (map), from `vehicle_latest` |

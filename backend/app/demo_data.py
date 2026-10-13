@@ -1,5 +1,7 @@
 """Small fictional network used when live sources are unavailable."""
 
+import math
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from geoalchemy2.shape import from_shape
@@ -7,8 +9,8 @@ from shapely.geometry import LineString, Point
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .models import Route, RouteSegment, RouteStop, Stop, VehiclePosition
-from .routing import distance_meters
+from .geo import distance_meters
+from .models import DelaySnapshot, Route, RouteSegment, RouteStop, Stop, VehiclePosition
 
 STOPS = [
     ("centrum", "Centrum", 52.2298, 21.0118),
@@ -183,3 +185,32 @@ def seed_demo_network(session: Session) -> None:
             )
         )
     session.commit()
+
+
+def demo_line_delays(
+    now: datetime, lines: Sequence[tuple[str, str]], points: int = 48
+) -> list[DelaySnapshot]:
+    """Deterministic fictional history for the demo network, clearly labelled as demo."""
+    history = []
+    for step in range(points):
+        observed_at = (now - timedelta(minutes=2.5 * (points - 1 - step))).replace(microsecond=0)
+        for index, (line, mode) in enumerate(lines):
+            phase = step / 7 + index * 1.9
+            base = 40 + index * 55 + 110 * math.sin(phase) + 40 * math.sin(phase * 2.3)
+            vehicles = 4 + (index + step) % 3
+            late = max(0, min(vehicles, round(vehicles * max(base, 0) / 400)))
+            early = 1 if base < -20 else 0
+            history.append(
+                DelaySnapshot(
+                    observed_at=observed_at,
+                    line=line,
+                    mode=mode,
+                    vehicles=vehicles,
+                    mean_delay_seconds=round(base),
+                    median_delay_seconds=round(base * 0.9),
+                    early=early,
+                    on_time=vehicles - late - early,
+                    late=late,
+                )
+            )
+    return history

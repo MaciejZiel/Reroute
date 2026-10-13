@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
+from .api_live import router as live_router
 from .database import SessionLocal
 from .demo_data import seed_demo_network
 from .migrate import migrate
@@ -38,3 +39,4 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(router)
+app.include_router(live_router)

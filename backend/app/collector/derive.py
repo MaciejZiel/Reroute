@@ -255,11 +255,13 @@ def _observation_row(
     if projection.distance_m > MAX_OFF_ROUTE_M:
         row["match_status"] = int(MatchStatus.OFF_ROUTE)
         return row
-    next_index = min(int(projection.progress) + 1, len(timetable.stop_ids) - 1)
+    # Waiting at the first stop (layover): that stop is still ahead of the vehicle.
+    layover = _at_first_stop(obs.latitude, obs.longitude, timetable, projection.progress)
+    next_index = 0 if layover else min(int(projection.progress) + 1, len(timetable.stop_ids) - 1)
     row["next_stop_seq"] = next_index + 1
     row["next_stop_id"] = timetable.stop_ids[next_index]
     row["scheduled_s"] = round(projection.scheduled_s)
-    if _at_first_stop(obs.latitude, obs.longitude, timetable, projection.progress):
+    if layover:
         row["match_status"] = int(MatchStatus.LAYOVER)
         row["_progress"] = projection.progress
         return row

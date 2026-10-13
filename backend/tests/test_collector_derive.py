@@ -77,6 +77,7 @@ def test_vehicle_standing_at_the_first_stop_is_a_layover_not_a_delay() -> None:
     rows, _, _ = _run(timetable, [_obs(timetable, 21.0, _at(DAY, 7, 50))])
 
     assert rows[0]["match_status"] == MatchStatus.LAYOVER and rows[0]["delay_s"] is None
+    assert rows[0]["next_stop_seq"] == 1  # the first stop is still ahead
 
 
 def test_vehicle_waiting_just_past_the_first_stop_is_a_layover() -> None:

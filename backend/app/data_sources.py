@@ -4,8 +4,6 @@ import csv
 import io
 import os
 import tempfile
-import threading
-import time
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -15,8 +13,6 @@ from typing import TextIO
 
 import httpx
 from geoalchemy2.shape import from_shape
-from google.protobuf.message import DecodeError
-from google.transit import gtfs_realtime_pb2
 from shapely.geometry import LineString, MultiLineString, Point
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
@@ -35,7 +31,6 @@ from .timeutil import trip_service_date
 
 DEFAULT_GTFS_URL = "https://mkuran.pl/gtfs/warsaw.zip"
 DEFAULT_VEHICLES_URL = "https://mkuran.pl/gtfs/warsaw/vehicles.pb"
-VEHICLE_REFRESH_SECONDS = 12
 WARSAW_BOUNDS = (20.3, 51.7, 21.8, 52.7)
 
 
@@ -100,25 +95,6 @@ class ParsedSchedule:
     service_date: str = ""
     trips: tuple[ParsedTrip, ...] = ()
     patterns: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class LiveVehicle:
-    id: str
-    line: str
-    mode: str
-    latitude: float
-    longitude: float
-    observed_at: datetime
-    is_stale: bool
-    trip_id: str = ""
-
-
-@dataclass(frozen=True)
-class LiveVehicleSnapshot:
-    vehicles: tuple[LiveVehicle, ...]
-    observed_at: datetime | None
-    error: str | None = None
 
 
 def download_schedule(
@@ -415,92 +391,6 @@ def import_schedule(session: Session, schedule: ParsedSchedule) -> int:
     return len(schedule.routes)
 
 
-_vehicle_cache_lock = threading.Lock()
-_vehicle_cache_until = 0.0
-_vehicle_cache = LiveVehicleSnapshot((), None, "not fetched")
-
-
-def get_live_vehicles(session: Session, force: bool = False) -> LiveVehicleSnapshot:
-    """Fetch and cache the public GTFS-Realtime positions feed briefly."""
-    global _vehicle_cache_until, _vehicle_cache
-    if not force and time.monotonic() < _vehicle_cache_until:
-        return _vehicle_cache
-    with _vehicle_cache_lock:
-        if not force and time.monotonic() < _vehicle_cache_until:
-            return _vehicle_cache
-        try:
-            url = os.getenv("GTFS_RT_URL", DEFAULT_VEHICLES_URL)
-            response = httpx.get(
-                url, timeout=httpx.Timeout(8.0, connect=3.0), follow_redirects=True
-            )
-            response.raise_for_status()
-            feed = gtfs_realtime_pb2.FeedMessage()
-            feed.ParseFromString(response.content)
-            header_time = (
-                _utc_datetime(feed.header.timestamp) if feed.header.HasField("timestamp") else None
-            )
-            route_rows = session.scalars(
-                select(Route).order_by(Route.is_demo, Route.short_name)
-            ).all()
-            route_by_id = {route.id: route for route in route_rows}
-            route_by_name: dict[str, Route] = {}
-            for route in route_rows:
-                route_by_name.setdefault(route.short_name.casefold(), route)
-
-            vehicles: list[LiveVehicle] = []
-            observed_times = []
-            min_lon, min_lat, max_lon, max_lat = WARSAW_BOUNDS
-            for entity in feed.entity:
-                if not entity.HasField("vehicle"):
-                    continue
-                vehicle = entity.vehicle
-                if not vehicle.HasField("position"):
-                    continue
-                latitude = vehicle.position.latitude
-                longitude = vehicle.position.longitude
-                if not (min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon):
-                    continue
-                route_id = vehicle.trip.route_id if vehicle.HasField("trip") else ""
-                vehicle_id = vehicle.vehicle.id or vehicle.vehicle.label or entity.id
-                if not route_id and vehicle_id.startswith("V/"):
-                    parts = vehicle_id.split("/")
-                    route_id = parts[1] if len(parts) > 2 else ""
-                route = route_by_id.get(route_id) or route_by_name.get(route_id.casefold())
-                line = route.short_name if route else route_id
-                if not line and vehicle.HasField("vehicle"):
-                    line = vehicle.vehicle.label or vehicle.vehicle.id
-                mode = route.mode if route else "bus"
-                observed_at = (
-                    _utc_datetime(vehicle.timestamp)
-                    if vehicle.HasField("timestamp")
-                    else header_time
-                )
-                observed_at = observed_at or datetime.now(UTC)
-                observed_times.append(observed_at)
-                vehicles.append(
-                    LiveVehicle(
-                        id=vehicle_id,
-                        line=line or "?",
-                        mode=mode,
-                        latitude=latitude,
-                        longitude=longitude,
-                        observed_at=observed_at,
-                        is_stale=(datetime.now(UTC) - observed_at).total_seconds() > 120,
-                        trip_id=vehicle.trip.trip_id if vehicle.HasField("trip") else "",
-                    )
-                )
-            snapshot = LiveVehicleSnapshot(
-                tuple(vehicles),
-                max(observed_times, default=header_time),
-                None if vehicles else "empty feed",
-            )
-        except (httpx.HTTPError, DecodeError, ValueError) as error:
-            snapshot = LiveVehicleSnapshot((), None, str(error))
-        _vehicle_cache = snapshot
-        _vehicle_cache_until = time.monotonic() + VEHICLE_REFRESH_SECONDS
-        return snapshot
-
-
 def _service_dates(archive: zipfile.ZipFile, names: set[str]) -> dict[str, set[str]]:
     """Expand calendar.txt and calendar_dates.txt into service id -> YYYYMMDD dates."""
     dates: dict[str, set[str]] = defaultdict(set)
@@ -684,10 +574,6 @@ def _route_shape(shapes: tuple[tuple[tuple[float, float], ...], ...]) -> object 
     if not lines:
         return None
     return from_shape(lines[0] if len(lines) == 1 else MultiLineString(lines), srid=4326)
-
-
-def _utc_datetime(timestamp: int | float) -> datetime:
-    return datetime.fromtimestamp(timestamp, UTC)
 
 
 def _read_first_row(archive: zipfile.ZipFile, filename: str) -> dict[str, str]:
