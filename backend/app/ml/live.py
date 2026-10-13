@@ -76,6 +76,51 @@ def load_index(
     return EventIndex(events.values())
 
 
+# Why the model does not answer, for a short note to the reader.
+PAUSE_NO_VEHICLE = "no_vehicle"  # no live delay at all: nothing to say beyond the timetable
+PAUSE_VEHICLE_REPORT = "vehicle_report"  # the vehicle's last report is too old
+PAUSE_LAST_STOP = "last_stop"  # the last recorded stop is too old
+PAUSE_NO_STOP = "no_stop"  # no stop of the trip recorded yet
+
+
+def model_inputs_with_reasons(
+    index: EventIndex,
+    targets: Sequence[TargetStop],
+    now: datetime,
+    vehicle_delays: Sequence[float | None],
+    vehicle_ages_s: Sequence[float | None],
+) -> list[tuple[dict[str, float] | None, str | None]]:
+    """Feature values per target as of ``now``, or (None, reason) where the model must not
+    answer: no live vehicle delay, or one older than ``MAX_VEHICLE_AGE_S``; no recorded stop of
+    the trip, or the newest older than ``MAX_ORIGIN_AGE_S``; the target already passed (no
+    reason). The caller then uses the baseline, because the model was never trained or tested in
+    those situations."""
+    t0 = now.timestamp()
+    known_by_trip: dict[str, list[Event]] = {}
+    result: list[tuple[dict[str, float] | None, str | None]] = []
+    for number, target in enumerate(targets):
+        live, age = vehicle_delays[number], vehicle_ages_s[number]
+        if live is None or age is None:
+            result.append((None, PAUSE_NO_VEHICLE))
+            continue
+        if age > MAX_VEHICLE_AGE_S:
+            result.append((None, PAUSE_VEHICLE_REPORT))
+            continue
+        known = known_by_trip.setdefault(
+            target.trip_id, known_trip_events(index, target.trip_id, t0)
+        )
+        if not known:
+            result.append((None, PAUSE_NO_STOP))
+        elif known[-1].stop_seq >= target.stop_seq:
+            result.append((None, None))
+        elif t0 - known[-1].known_s > MAX_ORIGIN_AGE_S:
+            result.append((None, PAUSE_LAST_STOP))
+        else:
+            values = feature_vector(index, target, known[-1], t0, known, float(live), float(age))
+            result.append((dict(zip(FEATURE_NAMES, values, strict=True)), None))
+    return result
+
+
 def model_inputs(
     index: EventIndex,
     targets: Sequence[TargetStop],
@@ -83,28 +128,6 @@ def model_inputs(
     vehicle_delays: Sequence[float | None],
     vehicle_ages_s: Sequence[float | None],
 ) -> list[dict[str, float] | None]:
-    """Feature values per target as of ``now``, or None where the model must not answer: no live
-    vehicle delay, or one older than ``MAX_VEHICLE_AGE_S``; no recorded stop of the trip, or the
-    newest older than ``MAX_ORIGIN_AGE_S``; the target already passed. The caller then uses the
-    baseline, because the model was never trained or tested in those situations."""
-    t0 = now.timestamp()
-    known_by_trip: dict[str, list[Event]] = {}
-    result: list[dict[str, float] | None] = []
-    for number, target in enumerate(targets):
-        live, age = vehicle_delays[number], vehicle_ages_s[number]
-        if live is None or age is None or age > MAX_VEHICLE_AGE_S:
-            result.append(None)
-            continue
-        known = known_by_trip.setdefault(
-            target.trip_id, known_trip_events(index, target.trip_id, t0)
-        )
-        if (
-            not known
-            or known[-1].stop_seq >= target.stop_seq
-            or t0 - known[-1].known_s > MAX_ORIGIN_AGE_S
-        ):
-            result.append(None)
-            continue
-        values = feature_vector(index, target, known[-1], t0, known, float(live))
-        result.append(dict(zip(FEATURE_NAMES, values, strict=True)))
-    return result
+    """The inputs only, ``None`` where the model must not answer (see the function above)."""
+    found = model_inputs_with_reasons(index, targets, now, vehicle_delays, vehicle_ages_s)
+    return [values for values, _ in found]

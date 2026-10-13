@@ -11,6 +11,7 @@ import json
 import math
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from ..features import FeatureRow
@@ -60,7 +61,9 @@ class DelayModel:
     def vector(self, inputs: dict[str, float]) -> list[float]:
         return [float(inputs.get(name, math.nan)) for name in self.feature_names]
 
-    def predict_one(self, inputs: dict[str, float], with_reasons: bool = True) -> Prediction:
+    def predict_one(
+        self, inputs: dict[str, float], with_reasons: bool = True, lang: str = "en"
+    ) -> Prediction:
         x = self.vector(inputs)
         origin = base_delay(inputs)
         change = self.heads["median"].predict(x)
@@ -70,7 +73,7 @@ class DelayModel:
         reasons = None
         if with_reasons:
             phi, _ = self.heads["median"].contributions(x)
-            reasons = explain(self.feature_names, x, phi, origin, median)
+            reasons = explain(self.feature_names, x, phi, origin, median, lang)
         return Prediction(
             round(median), round(lower), round(upper), basis="live_delay", explanation=reasons
         )
@@ -88,6 +91,10 @@ class ModelPredictor:
     # asked, and the result is kept for a few seconds for the next poll of the same vehicle.
     CACHE_SECONDS = 20.0
     CACHE_SIZE = 256
+    # A vehicle report that is a little late must not make the answer flip between the model and
+    # the baseline from one poll to the next: the last model answer for a stop is kept this long.
+    HOLD_SECONDS = 60.0
+    HOLD_SIZE = 2048
 
     def __init__(self, model: DelayModel, name: str = "gbt-delay") -> None:
         self.model = model
@@ -95,19 +102,23 @@ class ModelPredictor:
         self.version = model.version
         self._fallback = BaselinePredictor()
         self._explained: dict[tuple, tuple[float, Prediction]] = {}
+        self._last: dict[tuple, tuple[float, Prediction]] = {}
 
-    def _cached_explained(self, inputs: dict[str, float]) -> Prediction:
+    def _cached_explained(self, inputs: dict[str, float], lang: str) -> Prediction:
         # The fractional seconds since the last stop do not change the reasons within the TTL.
-        key = tuple(
-            None if math.isnan(v) else round(v, 1)
-            for name, v in inputs.items()
-            if name != "seconds_since_origin"
+        key = (
+            lang,
+            *(
+                None if math.isnan(v) else round(v, 1)
+                for name, v in inputs.items()
+                if name != "seconds_since_origin"
+            ),
         )
         now = time.monotonic()
         hit = self._explained.get(key)
         if hit and hit[0] > now:
             return hit[1]
-        prediction = self.model.predict_one(inputs, True)
+        prediction = self.model.predict_one(inputs, True, lang)
         if len(self._explained) >= self.CACHE_SIZE:
             self._explained = {k: v for k, v in self._explained.items() if v[0] > now}
             if len(self._explained) >= self.CACHE_SIZE:
@@ -115,17 +126,46 @@ class ModelPredictor:
         self._explained[key] = (now + self.CACHE_SECONDS, prediction)
         return prediction
 
-    def predict(self, rows: Sequence[FeatureRow], explain: bool = False) -> list[Prediction]:
+    def _remember(self, key: tuple, prediction: Prediction) -> None:
+        now = time.monotonic()
+        if len(self._last) >= self.HOLD_SIZE:
+            self._last = {k: v for k, v in self._last.items() if now - v[0] <= self.HOLD_SECONDS}
+            if len(self._last) >= self.HOLD_SIZE:
+                self._last.clear()
+        self._last[key] = (now, prediction)
+
+    def _held(self, key: tuple) -> Prediction | None:
+        found = self._last.get(key)
+        if found and time.monotonic() - found[0] <= self.HOLD_SECONDS:
+            return replace(found[1], model_status="held")
+        return None
+
+    def predict(
+        self, rows: Sequence[FeatureRow], explain: bool = False, lang: str = "en"
+    ) -> list[Prediction]:
         fallback = self._fallback.predict(rows)
         result = []
         explained = False
         for row, plain in zip(rows, fallback, strict=True):
-            if not row.model_inputs or not self.model.in_range(row.model_inputs):
-                result.append(plain)
-                continue
-            if explain and not explained:
-                result.append(self._cached_explained(dict(row.model_inputs)))
-                explained = True
+            key = (row.trip_id, row.stop_id, lang)
+            if row.model_inputs and self.model.in_range(row.model_inputs):
+                inputs = dict(row.model_inputs)
+                if explain and not explained:
+                    prediction = self._cached_explained(inputs, lang)
+                    explained = True
+                else:
+                    prediction = self.model.predict_one(inputs, False, lang)
+                prediction = replace(prediction, model_status="model")
+                self._remember(key, prediction)
+                result.append(prediction)
+            elif row.model_inputs:
+                result.append(replace(plain, model_status="out_of_range"))
+            elif (held := self._held(key)) is not None and row.current_delay_s is not None:
+                # One late vehicle report must not flip the answer: keep the last model answer
+                # for a minute, never longer (report cap + this hold stays within the 180 s after
+                # which the app itself stops trusting a vehicle's delay).
+                result.append(held)
             else:
-                result.append(self.model.predict_one(dict(row.model_inputs), False))
+                status = "paused" if row.model_pause else None
+                result.append(replace(plain, model_status=status, pause_reason=row.model_pause))
         return result
