@@ -218,6 +218,39 @@ def test_a_rebuild_never_changes_the_serving_decision(tmp_path: Path) -> None:
     assert card["gain_vs_best_baseline"] == {"value": 1}
 
 
+def test_the_note_says_whether_the_folds_were_the_same_ones(tmp_path: Path) -> None:
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["card"]["data"]["last_event_epoch"] = BASE + 10_000_000
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    card, _ = credibility.add_credibility(model_path, _write_events(tmp_path), None, tmp_path / "d")
+    assert card["credibility_added"]["note"].endswith("on folds identical to the training run's")
+
+    document["card"]["data"] = {"last_event_epoch": BASE + 10_000_000, "arrivals": 5}
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    card, problems = credibility.add_credibility(
+        model_path, _write_events(tmp_path), None, tmp_path / "d", allow_mismatch=True
+    )
+    note = card["credibility_added"]["note"]
+    assert problems and "rebuilt" in note and "identical" not in note
+    assert card["credibility_added"]["rebuild_differences"] == problems
+
+
+def test_the_pull_time_recorded_by_training_is_used_when_none_is_given(tmp_path: Path) -> None:
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["card"]["data"]["last_event_epoch"] = BASE + 10_000_000
+    document["card"]["data"]["known_until_epoch"] = BASE + 600  # early: keeps only a few arrivals
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    events = tmp_path / "events.csv"
+    _write_events(tmp_path)
+    parts_recorded, _ = credibility.rebuild(DelayModel.load(model_path), events, None, None)
+    del document["card"]["data"]["known_until_epoch"]
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    parts_all, _ = credibility.rebuild(DelayModel.load(model_path), events, None, None)
+    assert sum(len(p) for p in parts_recorded.values()) < sum(len(p) for p in parts_all.values())
+
+
 def _iso(epoch: float) -> str:
     from datetime import UTC, datetime
 

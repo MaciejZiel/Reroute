@@ -119,6 +119,11 @@ class Observations:
     def __init__(self, rows: dict[str, tuple[list[float], list[int]]]) -> None:
         self.rows = rows
 
+    @property
+    def newest(self) -> float | None:
+        """Epoch seconds of the newest report held, if any."""
+        return max((times[-1] for times, _ in self.rows.values()), default=None)
+
     @classmethod
     def load(cls, path: Path, until: float | None = None) -> Observations:
         """Read the CSV written by ``ml/pull.sh`` (trip_id, observed_at, delay_s); with ``until``
