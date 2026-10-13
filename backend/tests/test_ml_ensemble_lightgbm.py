@@ -1,11 +1,14 @@
-"""The portable evaluator must reproduce the training library, predictions and SHAP values."""
+"""The exporter and evaluator against a live LightGBM (needs the out-of-tree libraries).
+
+The same equivalence is pinned without LightGBM in test_ml_ensemble_golden.py."""
 
 import math
 
 import pytest
 
-np = pytest.importorskip("numpy")
-lgb = pytest.importorskip("lightgbm")
+REASON = "training libraries are installed out of tree (see README)"
+np = pytest.importorskip("numpy", reason=REASON)
+lgb = pytest.importorskip("lightgbm", reason=REASON)
 
 from app.ml.ensemble import Ensemble  # noqa: E402
 from ml.export import ensemble_from_booster  # noqa: E402

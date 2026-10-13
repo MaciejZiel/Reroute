@@ -5,34 +5,15 @@ import math
 
 import pytest
 
-np = pytest.importorskip("numpy")
-pytest.importorskip("lightgbm")
+np = pytest.importorskip(
+    "numpy", reason="training libraries are installed out of tree (see README)"
+)
+pytest.importorskip("lightgbm", reason="training libraries are installed out of tree (see README)")
 
-from app.ml.featurize import Event  # noqa: E402
 from app.ml.model import DelayModel, ModelPredictor  # noqa: E402
 from ml import baselines, dataset, evaluate, report, train  # noqa: E402
 from ml.metrics import ClusterBootstrap  # noqa: E402
-
-BASE = 1_760_000_000.0
-
-
-def synthetic_events(trips: int = 120, stops: int = 14, seed: int = 5) -> list[Event]:
-    """Delays that persist with a drift and a pull towards a line level, one trip every minute."""
-    rng = np.random.default_rng(seed)
-    events = []
-    for number in range(trips):
-        delay = float(rng.normal(60, 90))
-        line = str(10 + number % 4)
-        for seq in range(1, stops + 1):
-            delay += rng.normal(0, 12) - 0.05 * delay
-            scheduled = BASE + number * 60 + seq * 90
-            actual = scheduled + delay
-            events.append(
-                Event(
-                    f"T{number}", seq, f"s{seq}", line, scheduled, actual, round(delay), actual + 30
-                )
-            )
-    return events
+from ml.synthetic import BASE, synthetic_events  # noqa: E402
 
 
 def test_folds_are_ordered_in_time_and_drop_samples_that_straddle_a_boundary() -> None:
