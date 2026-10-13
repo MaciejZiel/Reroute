@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
@@ -13,6 +12,8 @@ from ..timeutil import trip_service_date
 from .featurize import (
     FEATURE_NAMES,
     LEADER_WINDOW_S,
+    MAX_ORIGIN_AGE_S,
+    MAX_VEHICLE_AGE_S,
     Event,
     EventIndex,
     TargetStop,
@@ -70,23 +71,31 @@ def model_inputs(
     index: EventIndex,
     targets: Sequence[TargetStop],
     now: datetime,
-    vehicle_delays: Sequence[float | None] | None = None,
+    vehicle_delays: Sequence[float | None],
+    vehicle_ages_s: Sequence[float | None],
 ) -> list[dict[str, float] | None]:
-    """Feature values per target as of ``now``; None when the trip has no recorded stop yet or
-    the target stop has already been passed."""
+    """Feature values per target as of ``now``, or None where the model must not answer: no live
+    vehicle delay, or one older than ``MAX_VEHICLE_AGE_S``; no recorded stop of the trip, or the
+    newest older than ``MAX_ORIGIN_AGE_S``; the target already passed. The caller then uses the
+    baseline, because the model was never trained or tested in those situations."""
     t0 = now.timestamp()
     known_by_trip: dict[str, list[Event]] = {}
     result: list[dict[str, float] | None] = []
     for number, target in enumerate(targets):
-        live = vehicle_delays[number] if vehicle_delays else None
+        live, age = vehicle_delays[number], vehicle_ages_s[number]
+        if live is None or age is None or age > MAX_VEHICLE_AGE_S:
+            result.append(None)
+            continue
         known = known_by_trip.setdefault(
             target.trip_id, known_trip_events(index, target.trip_id, t0)
         )
-        if not known or known[-1].stop_seq >= target.stop_seq:
+        if (
+            not known
+            or known[-1].stop_seq >= target.stop_seq
+            or t0 - known[-1].known_s > MAX_ORIGIN_AGE_S
+        ):
             result.append(None)
             continue
-        values = feature_vector(
-            index, target, known[-1], t0, known, math.nan if live is None else float(live)
-        )
+        values = feature_vector(index, target, known[-1], t0, known, float(live))
         result.append(dict(zip(FEATURE_NAMES, values, strict=True)))
     return result

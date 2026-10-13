@@ -16,7 +16,7 @@ from ..features import FeatureRow
 from ..predict import BaselinePredictor, Prediction
 from .ensemble import Ensemble
 from .explain import explain
-from .featurize import base_delay
+from .featurize import FEATURE_NAMES, base_delay
 
 FORMAT = 1
 
@@ -27,16 +27,34 @@ class DelayModel:
             raise ValueError(f"unsupported model format {data.get('format')!r}")
         self.version: str = data["version"]
         self.feature_names: list[str] = data["feature_names"]
+        unknown = set(self.feature_names) - set(FEATURE_NAMES)
+        if unknown:
+            raise ValueError(f"model uses features this code cannot compute: {sorted(unknown)}")
         n = len(self.feature_names)
         self.heads = {name: Ensemble.from_json(head, n) for name, head in data["heads"].items()}
         self.shift_s: float = float(data["interval"]["conformal_shift_s"])
         self.card: dict = data.get("card", {})
         self.promoted: bool = bool(self.card.get("promoted", False))
+        # What the model was trained and tested on; outside it the baseline answers.
+        self.serving_range: dict = data.get("serving_range", {})
 
     @classmethod
     def load(cls, path: str | Path) -> DelayModel:
         with open(path, encoding="utf-8") as handle:
             return cls(json.load(handle))
+
+    def in_range(self, inputs: dict[str, float]) -> bool:
+        """Whether the inputs lie where the model was trained and its interval calibrated."""
+        limits = {
+            "stops_ahead": self.serving_range.get("max_stops_ahead"),
+            "sched_run_s": self.serving_range.get("max_sched_run_s"),
+            "seconds_since_origin": self.serving_range.get("max_origin_age_s"),
+        }
+        if not self.serving_range:
+            return False  # a file that does not state its range is not served
+        return all(
+            limit is None or not (inputs.get(name, 0.0) > limit) for name, limit in limits.items()
+        )
 
     def vector(self, inputs: dict[str, float]) -> list[float]:
         return [float(inputs.get(name, math.nan)) for name in self.feature_names]
@@ -58,7 +76,10 @@ class DelayModel:
 
 
 class ModelPredictor:
-    """Serves a ``DelayModel``. Trips without a recorded stop yet fall back to persistence."""
+    """Serves a ``DelayModel``.
+
+    Where it must not answer (no live vehicle delay, an old last stop, beyond the trained range of
+    stops) the baseline does, so the model never shows a number it was not tested for."""
 
     kind = "model"
     # Exact SHAP values cost a few milliseconds on a laptop and much more on a small server, and
@@ -76,7 +97,7 @@ class ModelPredictor:
         result = []
         explained = 0
         for row, plain in zip(rows, fallback, strict=True):
-            if not row.model_inputs:
+            if not row.model_inputs or not self.model.in_range(row.model_inputs):
                 result.append(plain)
                 continue
             result.append(

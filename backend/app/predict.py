@@ -94,9 +94,14 @@ def get_predictor() -> Predictor:
     if _predictor is None:
         spec = os.getenv("PREDICTOR", "")
         if spec == "model":
-            _predictor = load_model_predictor(
-                Path(os.getenv("DELAY_MODEL_FILE") or DEFAULT_MODEL_FILE)
-            )
+            path = Path(os.getenv("DELAY_MODEL_FILE") or DEFAULT_MODEL_FILE)
+            try:
+                _predictor = load_model_predictor(path)
+            except (OSError, ValueError, KeyError) as error:
+                log.warning(
+                    "PREDICTOR=model but %s is unusable (%s); serving the baseline", path, error
+                )
+                _predictor = BaselinePredictor()
         elif spec:
             module_name, _, class_name = spec.partition(":")
             _predictor = getattr(importlib.import_module(module_name), class_name)()
