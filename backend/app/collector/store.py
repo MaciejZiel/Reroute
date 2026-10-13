@@ -20,6 +20,9 @@ LATEST_COLUMNS = [column.name for column in tables.vehicle_latest.columns]
 OBSERVATION_COLUMNS = [column.name for column in tables.vehicle_observations.columns]
 ARRIVAL_COLUMNS = [column.name for column in tables.stop_arrival_events.columns]
 BATCH = 2000
+# Written by the live loop on every tick, also when the upstream feed fails: the API reads it to
+# know a collector is running, so it never polls the upstream feed itself in that case.
+HEARTBEAT_KEY = "collector:heartbeat"
 
 
 class TimetableCache:

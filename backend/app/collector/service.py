@@ -217,6 +217,7 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
             now = time.monotonic()
             metrics.gauge("last_poll_duration_seconds", round(now - started, 3))
             try:
+                store.set_state(engine, store.HEARTBEAT_KEY, datetime.now(UTC).isoformat())
                 if now - last_alerts >= settings.alerts_interval_s:
                     last_alerts = now
                     poll_alerts(engine, client, settings, metrics)

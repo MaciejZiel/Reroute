@@ -26,6 +26,9 @@ MAX_OFF_ROUTE_M = 250
 MIN_DELAY_S = -15 * 60
 MAX_DELAY_S = 90 * 60
 LAYOVER_PROGRESS = 0.02
+# Vehicles stand at the first stop a few metres past the pole; first legs are often short
+# (median ~160 m), so a share of the leg alone mistakes the wait for an early departure.
+LAYOVER_DISTANCE_M = 50
 # Observations further apart than this do not produce arrival events: the vehicle may have
 # been out of range, and interpolating across a long gap would invent times.
 MAX_EVENT_GAP_S = 600
@@ -253,7 +256,7 @@ def _observation_row(
         row["match_status"] = int(MatchStatus.OFF_ROUTE)
         return row
     # Waiting at the first stop (layover): that stop is still ahead of the vehicle.
-    layover = projection.progress < LAYOVER_PROGRESS
+    layover = _at_first_stop(obs.latitude, obs.longitude, timetable, projection.progress)
     next_index = 0 if layover else min(int(projection.progress) + 1, len(timetable.stop_ids) - 1)
     row["next_stop_seq"] = next_index + 1
     row["next_stop_id"] = timetable.stop_ids[next_index]
@@ -274,6 +277,20 @@ def _observation_row(
     row["match_status"] = int(MatchStatus.OK)
     row["_progress"] = projection.progress
     return row
+
+
+def _at_first_stop(
+    latitude: float, longitude: float, timetable: TripTimetable, progress: float
+) -> bool:
+    """Still waiting at the first stop: the trip has not really started, so no delay yet."""
+    if progress < LAYOVER_PROGRESS:
+        return True
+    if progress >= 1:
+        return False
+    scale_x = 111_320 * math.cos(math.radians(latitude))
+    dx = (timetable.longitudes[0] - longitude) * scale_x
+    dy = (timetable.latitudes[0] - latitude) * 110_540
+    return math.hypot(dx, dy) <= LAYOVER_DISTANCE_M
 
 
 def _arrivals(
