@@ -434,3 +434,19 @@ def test_baseline_predictor_persists_the_current_delay() -> None:
 
 def test_service_instant_used_by_the_api_matches_wall_clock_on_a_normal_day() -> None:
     assert service_instant(DAY, 12 * 3600) == _local(DAY, 12)
+
+
+def test_a_running_collector_stops_the_api_from_fetching_the_feed(
+    client: TestClient, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The upstream feed is stale (no recent positions), but the collector is alive: the API must
+    # not start polling the feed as well.
+    store.set_state(pg_engine, store.HEARTBEAT_KEY, datetime.now(UTC).isoformat())
+    monkeypatch.setattr(live, "_fallback_until", 0.0)
+
+    def no_fetch(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the API fetched the upstream feed")
+
+    monkeypatch.setattr(live, "GtfsRtClient", no_fetch)
+
+    assert client.get("/api/vehicles").status_code == 200

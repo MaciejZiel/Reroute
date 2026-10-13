@@ -99,7 +99,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       });
       map.addLayer({
         id: "stop-cluster-count", type: "symbol", source: "network", filter: ["has", "point_count"],
-        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"], "text-size": 10 },
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Bold"], "text-size": 10 },
         paint: { "text-color": "#e8ece5" },
       });
       map.addLayer({
@@ -128,7 +128,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       });
       map.addLayer({
         id: "vehicle-labels", type: "symbol", source: "vehicles",
-        layout: { "text-field": ["get", "line"], "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"], "text-size": 10, "text-offset": [0, 1.35], "text-allow-overlap": true },
+        layout: { "text-field": ["get", "line"], "text-font": ["Open Sans Bold"], "text-size": 10, "text-offset": [0, 1.35], "text-allow-overlap": true },
         paint: { "text-color": "#f3ebd7", "text-halo-color": "#182321", "text-halo-width": 1.2 },
       });
       map.addLayer({
