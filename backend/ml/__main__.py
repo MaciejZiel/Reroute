@@ -23,7 +23,7 @@ def results_table(card: dict) -> str:
     scores, interval = card["scores"], card["interval"]
     horizons = list(next(iter(scores.values()))["by_horizon"])
     lines = [
-        "| predictor | MAE s (95% CI) | RMSE s (95% CI) | bias s | "
+        "| predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | "
         + " | ".join(f"MAE {h}" for h in horizons)
         + " |",
         "| --- | --- | --- | --- | " + " | ".join("---" for _ in horizons) + " |",

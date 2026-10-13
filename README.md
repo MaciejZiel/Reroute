@@ -172,7 +172,7 @@ The vehicle view shows the same reason as one quiet line under the next stops, w
 
 **Results on the held-out later window** (MAE and RMSE in seconds; the intervals come from a bootstrap that resamples whole trips, because arrivals of one trip are strongly dependent; "MAE under 2 min" etc. bin by the scheduled time from the last stop to the target):
 
-| predictor | MAE s (95% CI) | RMSE s (95% CI) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
+| predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | scheduled (zero delay) | 102.6 (95.3 to 110.1) | 157.1 (139.6 to 176.2) | -76.7 | 103.0 | 99.3 | 102.2 | 108.8 |
 | persistence (BaselinePredictor) | 44.8 (43.2 to 46.6) | 69.9 (63.7 to 76.4) | -14.1 | 19.1 | 31.3 | 48.7 | 70.0 |
