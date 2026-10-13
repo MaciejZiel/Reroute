@@ -172,7 +172,7 @@ The vehicle view shows the same reason as one quiet line under the next stops, w
 
 **Results on the held-out later window** (MAE and RMSE in seconds; the intervals come from a bootstrap that resamples whole trips, because arrivals of one trip are strongly dependent; "MAE under 2 min" etc. bin by the scheduled time from the last stop to the target):
 
-| predictor | MAE s (95% CI) | RMSE s (95% CI) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
+| predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | scheduled (zero delay) | 102.6 (95.3 to 110.1) | 157.1 (139.6 to 176.2) | -76.7 | 103.0 | 99.3 | 102.2 | 108.8 |
 | persistence (BaselinePredictor) | 44.8 (43.2 to 46.6) | 69.9 (63.7 to 76.4) | -14.1 | 19.1 | 31.3 | 48.7 | 70.0 |
@@ -185,6 +185,8 @@ The vehicle view shows the same reason as one quiet line under the next stops, w
 The best baseline, chosen on the calibration window and not on the test window, is the existing persistence predictor. The model's MAE is **8.2% lower** (bootstrap interval 7.2% to 9.3%), RMSE about 9% lower. By horizon the relative gain is 14%, 10%, 8% and 7%, so it is largest for the nearest stops. The 80% interval covered 78.6% of test arrivals, slightly below nominal; the persistence-plus-empirical-quantiles interval covers more because it is wider (191 s against 126 s).
 
 How far to trust these numbers: the bootstrap interval is sampling uncertainty inside this one window. It treats trips as independent, so it ignores shocks that hit the whole network at once, and it says nothing about other days. The test window was also looked at more than once while the pipeline was being built (features, the vehicle-delay input and the serving rules were changed after earlier evaluations), so it is not a pristine one-shot holdout. The rule for serving the model by default (at least 5% lower MAE than the best baseline with the bootstrap interval above zero) was written into the code at the start, but the history cannot prove that it was not adjusted; read it as a sanity gate for one window, not as evidence the model generalises. It passed, so the model is the default; had it failed, the file would still be trained and reported but `get_predictor()` would keep the baseline (the card inside the model file says `promoted: false`). The historical-median row is degenerate with one evening: the test hours hardly occur in the training window, so it collapses to a near-global median.
+
+**Frozen-model check.** `make ml-frozen` scores the committed model file unchanged (read by the same pure-Python evaluator the server uses, nothing refitted) on arrivals after its training window. Run on 2026-10-13 right after the model was built, the only later data was 17 minutes of the same evening (31,155 samples, 962 trips): MAE 34.8 s against 37.6 s for persistence, 7.4% lower (bootstrap interval 5.2% to 9.5%), 80% interval coverage 80.3%, so the margin held on those minutes. That is a sanity check, not evidence about other days; the full table is in [docs/ml/frozen_check.md](docs/ml/frozen_check.md). The command is there to be repeated whenever the collector has gathered a new day, before anyone retrains.
 
 ![MAE by horizon, model against persistence](docs/ml/mae_by_horizon.svg)
 
@@ -209,6 +211,7 @@ pip install -e 'backend[dev,ml]'        # LightGBM, NumPy, SciPy (training only)
 REROUTE_SSH="ssh -p 8022 user@server" make ml-pull   # or DATABASE_URL=... make ml-pull
 make ml-train                           # writes backend/models/delay_model.json and docs/ml/*
 make ml-test                            # includes: exported model reproduces LightGBM, SHAP and live inputs
+make ml-frozen                          # score the committed model, unchanged, on later data
 ```
 
 The model file is picked up by path when the API starts: `DELAY_MODEL_FILE` (default `backend/models/delay_model.json`). With nothing set the API serves the model only if its card says it was promoted; `PREDICTOR=model` forces it, `PREDICTOR=package.module:Class` selects another predictor. The version stamp (data date and a hash of the trees) is returned in every response as `model.version`. A migration adds a small BRIN index on `stop_arrival_events(actual_at)` so the live inputs (the last hour of arrivals of a few lines and stops) are cheap to read.

@@ -21,7 +21,11 @@ run() {
   fi
 }
 
-run "\\copy (SELECT service_date, trip_id, stop_seq, stop_id, line, scheduled_at, actual_at, delay_s, gap_s FROM stop_arrival_events ORDER BY service_date, trip_id, stop_seq) TO STDOUT WITH CSV HEADER" > "$arrivals"
+# With observations, copy only the arrivals inside the same window: older arrivals would have no
+# vehicle delay and would silently be trained on a different base.
+window=""
+if [ -n "$observations" ]; then window="WHERE actual_at > now() - interval '$days days'"; fi
+run "\\copy (SELECT service_date, trip_id, stop_seq, stop_id, line, scheduled_at, actual_at, delay_s, gap_s FROM stop_arrival_events $window ORDER BY service_date, trip_id, stop_seq) TO STDOUT WITH CSV HEADER" > "$arrivals"
 wc -l "$arrivals" >&2
 if [ -n "$observations" ]; then
   run "\\copy (SELECT trip_id, observed_at, delay_s FROM vehicle_observations WHERE trip_id IS NOT NULL AND delay_s IS NOT NULL AND match_status = 0 AND observed_at > now() - interval '$days days' ORDER BY trip_id, observed_at) TO STDOUT WITH CSV HEADER" > "$observations"

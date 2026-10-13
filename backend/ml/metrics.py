@@ -52,9 +52,7 @@ class ClusterBootstrap:
         """How much smaller the model's mean absolute error is than the baseline's, as a
         fraction of the baseline's, on the same resampled trips."""
         base, model = self._per_group(baseline_abs), self._per_group(model_abs)
-        count = self._per_group(np.ones(len(model_abs)))
         point = 1 - model.sum() / base.sum()
         boot = 1 - (self.draws @ model) / (self.draws @ base)
         low, high = np.percentile(boot, [2.5, 97.5])
-        del count
         return Interval(float(point), float(low), float(high))

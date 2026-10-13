@@ -82,3 +82,38 @@ def test_json_round_trip_is_lossless() -> None:
     clone = Ensemble.from_json(ensemble.to_json(), ensemble.n_features)
     row = x[7].tolist()
     assert clone.predict(row) == ensemble.predict(row)
+
+
+def test_exported_ensemble_matches_lightgbm_in_the_production_configuration() -> None:
+    """Quantile heads with bagging, feature subsampling and early stopping, as ml/train.py fits."""
+    x, y = _data(6000, seed=11)
+    cut = 4500
+    params = {
+        "objective": "quantile",
+        "alpha": 0.9,
+        "num_leaves": 15,
+        "learning_rate": 0.1,
+        "min_data_in_leaf": 50,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 1,
+        "lambda_l2": 10.0,
+        "verbose": -1,
+        "seed": 1,
+        "deterministic": True,
+        "num_threads": 1,
+    }
+    data = lgb.Dataset(x[:cut], y[:cut])
+    valid = lgb.Dataset(x[cut:], y[cut:], reference=data)
+    booster = lgb.train(
+        params, data, 400, valid_sets=[valid], callbacks=[lgb.early_stopping(15, verbose=False)]
+    )
+    assert 0 < booster.best_iteration < 400  # early stopping really cut the ensemble
+    ensemble = ensemble_from_booster(booster)
+    probe = x[cut : cut + 80]
+    expected = booster.predict(probe)
+    contrib = booster.predict(probe, pred_contrib=True)
+    for row, value, shap in zip(probe, expected, contrib, strict=True):
+        assert ensemble.predict(row.tolist()) == pytest.approx(value, abs=1e-9)
+        phi, bias = ensemble.contributions(row.tolist())
+        assert np.allclose([*phi, bias], shap, atol=1e-7)

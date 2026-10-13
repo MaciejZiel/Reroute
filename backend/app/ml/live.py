@@ -21,15 +21,22 @@ from .featurize import (
     known_trip_events,
 )
 
-# Arrivals of the targeted trips (primary-key lookup) and everything recent on their lines and
-# stops (the actual_at index prunes the partition scan).
+# Two queries rather than one OR: the trips come from the primary key, the recent rows from the
+# arrival-time index; combined in one statement the planner rechecks both arms on every row of
+# the lossy bitmap.
+TRIP_SQL = text(
+    """
+    SELECT trip_id, stop_seq, stop_id, line, scheduled_at, actual_at, delay_s, gap_s
+    FROM stop_arrival_events
+    WHERE service_date = ANY(:dates) AND trip_id = ANY(:trips)
+    """
+)
 RECENT_SQL = text(
     """
     SELECT trip_id, stop_seq, stop_id, line, scheduled_at, actual_at, delay_s, gap_s
     FROM stop_arrival_events
-    WHERE (service_date = ANY(:dates) AND trip_id = ANY(:trips))
-       OR (actual_at >= :since AND actual_at <= :now
-           AND (line = ANY(:lines) OR stop_id = ANY(:stops)))
+    WHERE actual_at >= :since AND actual_at <= :now
+      AND (line = ANY(:lines) OR stop_id = ANY(:stops))
     """
 )
 
@@ -41,17 +48,19 @@ def load_index(
     stops: Sequence[str],
     now: datetime,
 ) -> EventIndex:
-    rows = db.execute(
-        RECENT_SQL,
-        {
-            "dates": sorted({day for trip in trips if (day := trip_service_date(trip))}),
-            "trips": list(trips),
-            "since": now - timedelta(seconds=LEADER_WINDOW_S + 60),
-            "now": now,
-            "lines": list(lines),
-            "stops": list(stops),
-        },
-    ).all()
+    dates = sorted({day for trip in trips if (day := trip_service_date(trip))})
+    rows = [
+        *db.execute(TRIP_SQL, {"dates": dates, "trips": list(trips)}).all(),
+        *db.execute(
+            RECENT_SQL,
+            {
+                "since": now - timedelta(seconds=LEADER_WINDOW_S + 60),
+                "now": now,
+                "lines": list(lines),
+                "stops": list(stops),
+            },
+        ).all(),
+    ]
     events = {}
     for trip_id, seq, stop_id, line, scheduled_at, actual_at, delay_s, gap_s in rows:
         events[(trip_id, seq)] = Event(
