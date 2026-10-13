@@ -8,8 +8,8 @@ from datetime import datetime
 
 import numpy as np
 
-from app.predict import BaselinePredictor
 from app.ml.featurize import FEATURE_NAMES
+from app.predict import BaselinePredictor
 from app.timeutil import TIMEZONE
 
 from .dataset import Samples
@@ -31,9 +31,19 @@ def persistence(samples: Samples) -> np.ndarray:
     predictor = BaselinePredictor()
     rows = [
         FeatureRow(
-            trip_id="", line="", stop_id="", stop_seq=0, scheduled_at=when, stops_remaining=0,
-            current_delay_s=int(delay), delay_trend_s_per_min=None, previous_stop_delay_s=None,
-            hour_local=0, weekday=0, route_mean_delay_s=None, active_alerts=0,
+            trip_id="",
+            line="",
+            stop_id="",
+            stop_seq=0,
+            scheduled_at=when,
+            stops_remaining=0,
+            current_delay_s=int(delay),
+            delay_trend_s_per_min=None,
+            previous_stop_delay_s=None,
+            hour_local=0,
+            weekday=0,
+            route_mean_delay_s=None,
+            active_alerts=0,
         )
         for delay in samples.origin_delay
     ]
