@@ -46,7 +46,7 @@ export default function App() {
   const stop = usePolled(focus.stopId, (signal) => fetchDepartures(focus.stopId as string, signal), 20_000);
   const line = usePolled(focus.lineId, (signal) => fetchLine(focus.lineId as string, signal), 10 * 60_000);
   const lineVehicles = usePolled(focus.lineId, (signal) => fetchLineVehicles(focus.lineId as string, signal), 15_000);
-  const vehicle = usePolled(focus.vehicleId, (signal) => fetchVehicle(focus.vehicleId as string, signal), 15_000);
+  const vehicle = usePolled(focus.vehicleId ? `${focus.vehicleId}|${language}` : null, (signal) => fetchVehicle(focus.vehicleId as string, language, signal), 15_000);
 
   // Zoom to the line's route when it arrives.
   useEffect(() => {

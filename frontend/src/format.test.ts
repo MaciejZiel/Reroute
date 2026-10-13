@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstExplained, preciseDelayText } from "./format";
+import { firstExplained, pausedNoteKey, preciseDelayText } from "./format";
 
 describe("preciseDelayText", () => {
   it("keeps the seconds so a one-minute range is not shown as +4 … +5 min", () => {
@@ -15,5 +15,16 @@ describe("firstExplained", () => {
     const stops = [{ name: "A", why: null }, { name: "B", why: { summary: "x" } }, { name: "C", why: { summary: "y" } }];
     expect(firstExplained(stops)?.name).toBe("B");
     expect(firstExplained([{ name: "A", why: undefined }])).toBeUndefined();
+  });
+});
+
+describe("pausedNoteKey", () => {
+  it("explains a paused first stop, and only then", () => {
+    expect(pausedNoteKey([{ model_status: "paused", pause_reason: "vehicle_report", why: null }])).toBe("pausedVehicleReport");
+    expect(pausedNoteKey([{ model_status: "paused", pause_reason: "last_stop" }])).toBe("pausedLastStop");
+    expect(pausedNoteKey([{ model_status: "paused", pause_reason: "no_vehicle" }])).toBeNull();
+    expect(pausedNoteKey([{ model_status: "model", why: { summary: "x" } }])).toBeNull();
+    expect(pausedNoteKey([{ model_status: "held", why: { summary: "x" } }])).toBeNull();
+    expect(pausedNoteKey([])).toBeNull();
   });
 });

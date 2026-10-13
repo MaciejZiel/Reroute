@@ -24,6 +24,16 @@ export function firstExplained<T extends { why?: unknown }>(stops: T[]): T | und
   return stops.find((stop) => stop.why);
 }
 
+/** The key of the calm note shown when the model is paused for the first stop, if any. */
+export function pausedNoteKey(stops: { model_status?: string | null; pause_reason?: string | null; why?: unknown }[]):
+  "pausedVehicleReport" | "pausedLastStop" | null {
+  const first = stops[0];
+  if (!first || first.why || first.model_status !== "paused") return null;
+  if (first.pause_reason === "vehicle_report") return "pausedVehicleReport";
+  if (first.pause_reason === "last_stop") return "pausedLastStop";
+  return null;
+}
+
 /** "+3 min", "−1 min" or "0 min" for a delay in seconds. */
 export function delayText(seconds: number, minuteLabel: string): string {
   const minutes = Math.round(seconds / 60);
