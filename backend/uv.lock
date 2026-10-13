@@ -103,6 +103,25 @@ wheels = [
 ]
 
 [[package]]
+name = "gtfs-rt-kit"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gtfs-realtime-bindings" },
+    { name = "protobuf" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2f/78/d17a34fc63b7e78b49229d7dea8901742d3b8ace55bda548f85bac0edb62/gtfs_rt_kit-0.1.0.tar.gz", hash = "sha256:bc21ef4251f98a01f709dd15f66aa5e91f22dab5f12c6aec44f7cab5213511ae", size = 38470, upload-time = "2026-10-10T21:54:37.82Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/13/d8bb9714a04aa360835303cd7451a0e0175b820bffe257a31d2d861699e8/gtfs_rt_kit-0.1.0-py3-none-any.whl", hash = "sha256:4a8eb90ef8f9dec02acfbda0aad9f9edaf5012c241324cd8547e220d5fec7350", size = 26415, upload-time = "2026-10-10T21:54:36.543Z" },
+]
+
+[package.optional-dependencies]
+http = [
+    { name = "httpx" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -557,7 +576,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "geoalchemy2" },
-    { name = "gtfs-realtime-bindings" },
+    { name = "gtfs-rt-kit", extra = ["http"] },
     { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
     { name = "shapely" },
@@ -575,7 +594,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "geoalchemy2", specifier = ">=0.17,<1.0" },
-    { name = "gtfs-realtime-bindings", specifier = ">=3.0,<4.0" },
+    { name = "gtfs-rt-kit", extras = ["http"], specifier = ">=0.1.0,<0.2" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0,<9.0" },
