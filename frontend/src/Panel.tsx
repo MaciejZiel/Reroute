@@ -3,7 +3,8 @@ import type { LineScope } from "./vehicles";
 import type { TranslationKey } from "./i18n";
 import type { Polled } from "./usePolled";
 import type {
-  Departure, FeatureCollection, Focus, Language, LineDepartures, LineDetail, StopDepartures, VehicleDetail,
+  Departure, FeatureCollection, Focus, Language, LineDepartures, LineDetail, NextStop, StopDepartures,
+  VehicleDetail,
 } from "./types";
 
 type T = (key: TranslationKey) => string;
@@ -42,6 +43,20 @@ function DelayBadge({ seconds, t, big = false }: { seconds: number | null; t: T;
 
 function inMinutes(departure: Departure, t: T) {
   return departure.minutes === 0 ? t("now") : `${departure.minutes} ${t("min")}`;
+}
+
+/** One quiet line under the next stops: what the model says moved the first prediction. */
+function WhyLine({ stop, t }: { stop: NextStop; t: T }) {
+  const range = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null
+    ? `${t("likelyRange")}: ${delayText(stop.lower_delay_seconds, t("min"))} … ${delayText(stop.upper_delay_seconds, t("min"))}`
+    : null;
+  return (
+    <p className="why-note">
+      <span className="section-kicker">{t("whyThis")}</span>
+      <span lang="en">{stop.why?.summary}</span>
+      {range && <small>{range}</small>}
+    </p>
+  );
 }
 
 function DepartureRow({ departure, language, t }: { departure: Departure; language: Language; t: T }) {
@@ -191,6 +206,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
               <span className="timeline-times"><b>{clock(stop.predicted_at ?? stop.scheduled_at, language)}</b>{stop.predicted_at && <small>{t("scheduled")} {clock(stop.scheduled_at, language)}</small>}</span>
             </li>))}</ol>
         </>}
+        {data.next_stops[0]?.why && <WhyLine stop={data.next_stops[0]} t={t}/>}
         <p className="estimate-note">{t("estimateNote")} {data.model.kind === "baseline" ? t("modelBaseline") : `${t("modelOther")}: ${data.model.name} ${data.model.version}.`}</p>
       </>}
     </>

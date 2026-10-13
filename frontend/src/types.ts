@@ -106,6 +106,10 @@ export interface NextStop {
   scheduled_at: string;
   predicted_at: string | null;
   delay_seconds: number | null;
+  lower_delay_seconds?: number | null;
+  upper_delay_seconds?: number | null;
+  /** Present only when a trained model answered; the text is English. */
+  why?: { summary: string; factors: { feature: string; effect_seconds: number; text: string }[] } | null;
 }
 
 export interface VehicleDetail {
