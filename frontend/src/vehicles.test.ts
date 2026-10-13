@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentStep, headingVehicleIds, interpolate, positions, scopeVehicles } from "./vehicles";
+import { anyMoved, currentStep, headingVehicleIds, interpolate, positions, scopeVehicles } from "./vehicles";
 import type { Feature, FeatureCollection, Focus, StopDepartures } from "./types";
 
 const NONE: Focus = { stopId: null, stopName: null, stopCoordinate: null, lineId: null, lineLabel: null, vehicleId: null };
@@ -65,5 +65,15 @@ describe("interpolate", () => {
   });
   it("clamps the progress", () => {
     expect(interpolate(from, next, 3).features[0].geometry).toEqual({ type: "Point", coordinates: [21.2, 52.2] });
+  });
+});
+
+describe("anyMoved", () => {
+  const from = positions(collection(vehicle("a", 21, 52)));
+  it("is false when the known vehicles kept their positions", () => {
+    expect(anyMoved(from, collection(vehicle("a", 21, 52), vehicle("new", 21.5, 52.5)))).toBe(false);
+  });
+  it("is true when a known vehicle moved", () => {
+    expect(anyMoved(from, collection(vehicle("a", 21.001, 52)))).toBe(true);
   });
 });

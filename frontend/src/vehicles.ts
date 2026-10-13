@@ -52,6 +52,16 @@ export function interpolate(from: Map<string, [number, number]>, to: FeatureColl
   };
 }
 
+/** Whether any vehicle already on the map has a new position in the next snapshot. */
+export function anyMoved(from: Map<string, [number, number]>, to: FeatureCollection): boolean {
+  return to.features.some((feature) => {
+    const before = from.get(feature.id);
+    if (!before || feature.geometry.type !== "Point") return false;
+    const [lng, lat] = feature.geometry.coordinates;
+    return lng !== before[0] || lat !== before[1];
+  });
+}
+
 export function positions(collection: FeatureCollection | null): Map<string, [number, number]> {
   const result = new Map<string, [number, number]>();
   for (const feature of collection?.features ?? []) {

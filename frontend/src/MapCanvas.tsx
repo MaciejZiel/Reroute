@@ -3,7 +3,7 @@ import { AttributionControl, Map as MapLibreMap, NavigationControl, setWorkerUrl
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { basemapStyle } from "./basemap";
 import { BUS_COLOR, registerIcons, TRAM_COLOR } from "./stopIcons";
-import { interpolate, positions } from "./vehicles";
+import { anyMoved, interpolate, positions } from "./vehicles";
 import type { FeatureCollection, LineDetail, StopSummary } from "./types";
 
 setWorkerUrl(mapWorkerUrl);
@@ -221,7 +221,9 @@ export default function MapCanvas(props: MapCanvasProps) {
     if (!source) return;
     const target = vehicles ?? { type: "FeatureCollection" as const, features: [], data_mode: "live" as const, observed_at: null, notice: "" };
     const from = rendered.current;
-    const smooth = target.data_mode === "live" && target.features.length > 0 && target.features.length <= TWEEN_MAX_VEHICLES && from.size > 0;
+    // Polls repeat the same positions until the feed updates (about every two minutes), so only
+    // animate when something actually moved; otherwise a single update is enough.
+    const smooth = target.data_mode === "live" && target.features.length > 0 && target.features.length <= TWEEN_MAX_VEHICLES && from.size > 0 && anyMoved(from, target);
     if (!smooth) { source.setData(withIds(target)); rendered.current = positions(target); return; }
     const started = performance.now();
     const step = (now: number) => {
