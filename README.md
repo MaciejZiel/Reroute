@@ -1,6 +1,10 @@
 # Reroute
 
-**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?** Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival so a delay-prediction model can be trained later.
+**A live Warsaw transit map that answers one question: is my tram or bus coming, and is it late?**
+
+**[Live demo](https://reroute.maciejzielinski.dev)** · [Status](https://status.maciejzielinski.dev) · [Portfolio](https://maciejzielinski.dev)
+
+Click a stop to see every line serving it with the next timetable departures and, where a live vehicle of that trip can be matched, its delay; pick a line to see its route and its moving vehicles; click a vehicle for its delay against the schedule and its next stops. Underneath, a collector records every vehicle observation and stop arrival. The machine-learning delay model that will use that data is the next step; it is not built yet.
 
 [![CI](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciejZiel/Reroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -8,11 +12,17 @@
 ![FastAPI + PostGIS](https://img.shields.io/badge/FastAPI-PostGIS-009688.svg)
 ![React + MapLibre](https://img.shields.io/badge/React-MapLibre-3178c6.svg)
 
-![The calm default view: a muted dark basemap, quiet route lines and no vehicles until you ask for them](docs/screenshots/overview.png)
+[![Tram line 24 selected from Rondo Daszyńskiego: route, stops, live vehicles and departures with delays](docs/screenshots/line.png)](https://reroute.maciejzielinski.dev)
+
+## Status and self-hosting
+
+- **Live now:** the map, departures with delays estimated from live positions, line and vehicle views and the per-line punctuality view, at <https://reroute.maciejzielinski.dev> (uptime on the [status page](https://status.maciejzielinski.dev)).
+- **Self-hosted:** the public instance runs on a home server, not on a cloud platform.
+- **Next step, not built yet:** a machine-learning model that predicts delays. The data for it is already being collected: vehicle observations and derived stop arrivals are stored continuously, and raw feed snapshots are archived. Until a model exists, `/api/predictions` simply assumes the current delay persists.
 
 ## What it does
 
-- **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On a phone the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
+- **Three steps: stop, line, vehicle.** A progress rail at the top of the panel shows where you are; finished steps are clickable to go back. On narrow screens the panel is a bottom sheet (tap or drag the handle between peek, half and full height).
 - **Quiet by default.** No vehicles are drawn until you pick a line. A single switch, "Show all vehicles" (off by default), draws the whole fleet as small unlabelled dots for those who want the city-wide picture; names appear only when zoomed in.
 - **Stop panel.** Search by name (diacritics-insensitive) or zoom in and click a stop; see all lines at the station with their next timetable departures. Departures with a matched live vehicle show the delay and the expected time; late vehicles stay listed until they pass, vehicles that already passed disappear.
 - **Mode-aware stop icons.** Bus stops are mint, tram stops coral and stops served by both are split; a small glyph says which. Stops are hidden at city zoom (the route lines carry the overview), thin out by collision as you zoom in, get names from zoom 16 and the selected station is highlighted in gold with a single label.
@@ -20,26 +30,14 @@
 - **Vehicle detail.** Click a vehicle: delay against the timetable, status (waiting at the first stop, off route, stale position) and the next stops with scheduled and expected times.
 - **Delay colours.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
 - **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes.
-- **Bilingual, responsive UI** (Polish and English; on a phone the panel sits under the map).
-- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists).
+- **Bilingual, responsive UI** (Polish and English; on narrow screens the panel sits under the map).
+- **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (today: the current delay persists; the ML model is the next step).
 
-| All vehicles (switch on) | Stop selected |
+| Stop selected | Mobile: stop and line |
 | --- | --- |
-| ![The whole fleet as small dots, no labels at city zoom](docs/screenshots/all-vehicles.png) | ![Centrum station highlighted with mode-aware stop icons and the lines serving it](docs/screenshots/stop.png) |
+| ![Rondo Daszyńskiego station with the lines serving it and their next departures](docs/screenshots/stop.png) | ![Line 24 selected on a 400 px wide screen, with the bottom sheet under the map](docs/screenshots/mobile-line.png) |
 
-| Line focus | Only vehicles heading to my stop |
-| --- | --- |
-| ![Tram 18: route, stops and all of its live vehicles](docs/screenshots/line.png) | ![The same line limited to the vehicles that still have to reach the selected stop](docs/screenshots/line-heading.png) |
-
-| Vehicle detail | Punctuality (secondary view) |
-| --- | --- |
-| ![A tram with its delay against the timetable and next stops](docs/screenshots/vehicle.png) | ![Share of early, on-time and late vehicles per line and a delay trend](docs/screenshots/punctuality.png) |
-
-| Phone: stop | Phone: line |
-| --- | --- |
-| ![Bottom sheet over the map with the lines at the stop](docs/screenshots/mobile-stop.png) | ![Line focus with the bottom sheet at half height](docs/screenshots/mobile-line.png) |
-
-Screenshots are from the live Warsaw data on 13 October 2026, taken with `playwright-cli` against a local run.
+Screenshots are of the live deployment, taken with `playwright-cli` on 13 October 2026 at 1440 px and 400 px widths.
 
 ## Architecture
 
@@ -129,43 +127,6 @@ npm run build       # type check + production build
 To run the dev server against a backend without CORS set-up: `API_PROXY_TARGET=http://localhost:8000 VITE_API_URL= npm run dev`.
 
 The `TEST_DATABASE_URL` database must be named `*_test` and have PostGIS available: it is wiped. Without it the pure tests still run: service-day and DST arithmetic, vehicle projection, delays and arrival events (after-midnight trips, the 25 October DST night, loop lines, gaps), a trimmed recording of the real Warsaw feed against its timetables (`backend/tests/fixtures/`), GTFS parsing, features and the predictor seam. The database tests cover the import and migrations, partitions, idempotent writes, state restore after a restart, alerts, incremental backfill, and the API (search, departures with live/late/passed/stale vehicles, 24:xx trips and DST, 503/404, predictions). CI runs them against a PostGIS service plus the frontend type check and build.
-
-## Performance
-
-Measured on the full Warsaw network (318 bus and tram lines, 7,253 stops, 20,164 timed segments; feed of 9 Oct 2026) with the stack running in Docker Compose on a 16-thread laptop, using `backend/scripts/benchmark_api.py --runs 60 --seed 7` (random stops and lines from the network, closures and slowdowns alternating, 30 min):
-
-| Request | Before (`main` at #3) p50 / p95 | After p50 / p95 |
-| --- | --- | --- |
-| `POST /api/simulations`, stop | 397 / 487 ms | 30 / 84 ms |
-| `POST /api/simulations`, line | 465 / 846 ms | 105 / 483 ms |
-| `POST /api/simulations`, all | 416 / 756 ms | 59 / 442 ms |
-| `GET /api/network` | 731 ms, 10.5 MB | 65 ms, 2.4 MB gzip |
-
-What changed:
-
-- **Graph cache.** The stop graph (stops, segments, ~55k walking links from a lat/lon grid) took ~0.35 s to load and build on every request. It is now built once per data mode and timetable version (`feed_metadata.downloaded_at`), so a re-import invalidates it; the first query after start-up still pays ~0.5 s.
-- **Search reuse and bounds.** Undisrupted searches are cached per origin and target set (the graph is immutable), edges are pre-grouped per stop and line, and a disrupted search stops one hour past the usual journey time instead of sweeping the city for unreachable stops.
-- **Network response.** The 10.5 MB GeoJSON is serialised and gzipped once per timetable instead of on every page load.
-- **Index.** `route_stops(stop_id)` for the "lines at these stops" lookups (the primary key starts with `route_id`).
-
-The remaining cost is pure-Python Dijkstra: closing a long line samples up to eight journeys of 30–60 min across the city, and each search settles several thousand states.
-
-## Key technical decisions
-
-- **Demo data first, real data on demand.** A fresh `docker compose up` works offline with a fictional network, and every API response carries `data_mode` (`demo` or `live`) plus a source notice, so the UI can always say what it is showing. The 100 MB GTFS import is an explicit step, and it replaces only non-demo rows.
-- **Live feed fetched lazily, with a short shared cache.** Vehicle positions are not stored. The first request after the 12-second cache expires fetches the protobuf feed, behind a lock so concurrent requests don't hit the source twice. This keeps the server stateless and respectful of a free public feed, at the cost of one slower request per refresh.
-- **Shortest paths on a route-expanded stop graph.** The importer keeps one *segment* per pair of consecutive stops of a route, with the mean scheduled run time and the number of trips on the busiest service day of the feed. A search state is "at stop S" or "on line L at stop S", so boarding can carry an expected wait (half the headway, 1–15 min) plus a 2-minute transfer penalty, and walking links stops within 400 m (×1.3 street detour at 1.2 m/s). A closure deletes the affected segments, a slowdown multiplies their run times, and plain Dijkstra with an early exit once all targets are settled is fast enough (a few ms per origin on the 7k-stop network). Journeys are sampled per affected line and direction: two stops either side of a closed stop, or five evenly spaced stops along a closed line. There is no demand data, so "added minutes" are per journey, not passenger-weighted.
-- **Delays from positions, not from a predictions feed.** The Warsaw feed publishes positions with trip ids but no delays, so the delay is the feed timestamp minus the scheduled time interpolated at the vehicle's projection onto the trip's stop-to-stop lines. The service day is whichever of today/yesterday gives the smaller delay (GTFS times can exceed 24:00). Vehicles more than 250 m from their trip, standing at the first stop (layover) or outside −15…+90 min are skipped. Trip timetables are stored compactly: ~1,900 shared stop patterns plus one comma-separated departures string per trip (~80 MB in PostgreSQL for ~270k trips). Only per-line aggregates are kept, for 7 days.
-- **Cheap geo filtering for nearby stops.** Candidates come from a latitude/longitude bounding box in SQL, then exact haversine distances are computed in Python. With ~7k stops this is fast and easy to unit test. PostGIS geometries are stored for route shapes and stop locations, so the query can move to `ST_DWithin` with a spatial index when needed.
-
-## Limitations / next steps
-
-- Live positions can include stale or ghost vehicles from the source feed; vehicles older than 2 minutes are flagged as stale but still shown.
-- Delay estimates use straight lines between stops rather than the route shape, so a vehicle on a winding section can be placed slightly off; stop dwell times are not modelled. Snapshots are only taken while someone has the map open or `collect_delays` runs, and the demo network shows a clearly labelled fictional punctuality history.
-- The schema is created with `create_all` at startup, with an in-place column type fix; Alembic migrations would replace this.
-- Results are timetable estimates, not an official forecast or passenger count: there is no demand data, departures are averaged into a headway (no exact connection times), and a closed line is assumed to have no replacement service. The legacy impact score (affected stops × duration) is still returned for compatibility.
-- The graph and network caches live in the API process, which suits the single-worker Compose setup; several workers would each build their own copy (~0.5 s on first use). Line closures on long routes still take a few hundred ms in pure-Python Dijkstra; A* or contraction hierarchies would be the next step.
-- Tests cover GTFS parsing, routing and delay estimation without a database; there are no API-level tests against PostGIS or frontend tests yet.
 
 ## Performance
 
