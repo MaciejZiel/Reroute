@@ -121,33 +121,35 @@ class Observations:
                 delays.append(int(row["delay_s"]))
         return cls(dict(rows))
 
-    def latest(self, trip_id: str, moment: float) -> float:
-        """Delay of the newest observation of the trip at or before ``moment`` (NaN if none is
-        fresh enough to be served live)."""
+    def latest(self, trip_id: str, moment: float) -> tuple[float, float]:
+        """(delay, age in seconds) of the newest observation of the trip at or before ``moment``;
+        (NaN, NaN) if none is recent enough to be served live."""
         series = self.rows.get(trip_id)
         if series is None:
-            return math.nan
+            return math.nan, math.nan
         times, delays = series
         i = bisect_right(times, moment) - 1
         if i < 0 or moment - times[i] > self.MAX_AGE_S:
-            return math.nan
-        return float(delays[i])
+            return math.nan, math.nan
+        return float(delays[i]), moment - times[i]
 
 
-MOMENT_STRIDE = 3  # one in three observations of a trip is a prediction moment (about 60 s)
-JITTER_S = 20.0  # a request arrives at a random time after the latest poll
+MOMENT_EVERY_S = 60.0  # on average one simulated request per minute of a trip's life
 
 
 def _moments(index: EventIndex, trip_id: str, observations: Observations | None, rng):
     """Moments at which a prediction for this trip is simulated.
 
-    With observations: spread over the trip's life like live requests (each sampled observation
-    plus a random delay of up to one polling interval). Without: the instant each arrival became
-    known."""
+    With observations: uniformly random times over the trip's observed life, so the age of the
+    newest vehicle report is what a live request sees (long gaps between reports are as likely to
+    be hit as they are in reality). Without: the instant each arrival became known."""
     if observations is None:
         return sorted({event.known_s for event in index.by_trip[trip_id]})
-    times = observations.rows.get(trip_id, ([], []))[0][::MOMENT_STRIDE]
-    return [t + float(rng.uniform(0, JITTER_S)) for t in times]
+    times = observations.rows.get(trip_id, ([], []))[0]
+    if len(times) < 2:
+        return []
+    count = max(int((times[-1] - times[0]) / MOMENT_EVERY_S), 1)
+    return sorted(float(m) for m in rng.uniform(times[0], times[-1], count))
 
 
 def build_samples(
@@ -180,7 +182,7 @@ def build_samples(
             origin = known[-1]
             if moment - origin.known_s > MAX_ORIGIN_AGE_S:
                 continue
-            live = observations.latest(trip_id, moment) if observations else math.nan
+            live, age = observations.latest(trip_id, moment) if observations else (math.nan,) * 2
             if observations is not None and math.isnan(live):
                 continue
             for target in trip_events:
@@ -190,7 +192,7 @@ def build_samples(
                 spec = TargetStop(
                     trip_id, target.stop_seq, target.stop_id, target.line, target.scheduled_s
                 )
-                rows.append(feature_vector(index, spec, origin, moment, known, live))
+                rows.append(feature_vector(index, spec, origin, moment, known, live, age))
                 y.append(target.delay_s)
                 t0s.append(moment)
                 target_times.append(target.actual_s)

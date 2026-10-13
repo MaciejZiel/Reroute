@@ -19,3 +19,5 @@ data/*.db
 data/*.sqlite3
 *.log
 ml-data/
+test-results/
+playwright-report/

@@ -28,6 +28,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     "origin_delay_s",
     "vehicle_delay_s",
     "vehicle_minus_origin_s",
+    "vehicle_report_age_s",
     "prev_delay_change_s",
     "trend_s_per_min",
     "sched_run_s",
@@ -46,8 +47,13 @@ LINE_WINDOW_S = 900
 STOP_WINDOW_S = 1800
 LEADER_WINDOW_S = 3600
 # The model is trained and evaluated only where a live prediction is also made: the vehicle's own
-# delay is fresh, and the last recorded stop is recent. Elsewhere the baseline answers.
-MAX_VEHICLE_AGE_S = 45.0
+# delay is recent, and the last recorded stop is recent. Elsewhere the baseline answers.
+# Measured on the recorded feed (one evening): vehicles report a new position every 22 s at the
+# median, but 10% of gaps are longer than 45 s, so at a random moment the newest report is at most
+# 45 s old 89.5% of the time, 60 s 92.7%, 90 s 95.8% and 120 s 97.5%; the newest recorded stop is
+# at most 300 s old 98.3% of the time and 600 s 99.7%. 120 s and 600 s keep the model answering
+# in nearly all requests; the report's age is itself a feature, so the model sees what it costs.
+MAX_VEHICLE_AGE_S = 120.0
 MAX_ORIGIN_AGE_S = 600.0
 
 
@@ -183,6 +189,7 @@ def feature_vector(
     t0: float,
     trip_known: Sequence[Event] | None = None,
     vehicle_delay_s: float = NAN,
+    vehicle_age_s: float = NAN,
 ) -> list[float]:
     """Feature values in ``FEATURE_NAMES`` order for predicting ``target`` from ``origin``.
 
@@ -204,6 +211,7 @@ def feature_vector(
         float(origin.delay_s),
         vehicle_delay_s,
         vehicle_delay_s - origin.delay_s,
+        vehicle_age_s,
         float(change),
         trend(sorted(recent)),
         target.scheduled_s - origin.scheduled_s,

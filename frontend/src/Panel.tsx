@@ -1,4 +1,4 @@
-import { clock, delayClass, delayText, firstExplained, lineOrder, preciseDelayText } from "./format";
+import { clock, delayClass, delayText, firstExplained, lineOrder, pausedNoteKey, preciseDelayText } from "./format";
 import type { LineScope } from "./vehicles";
 import type { TranslationKey } from "./i18n";
 import type { Polled } from "./usePolled";
@@ -35,10 +35,12 @@ function LineChip({ label, mode }: { label: string; mode: string }) {
 
 function DelayBadge({ seconds, t, big = false }: { seconds: number | null; t: T; big?: boolean }) {
   const kind = delayClass(seconds);
+  // "On time" covers up to 3 min late (same as the map legend); say so, and on the big badge also say how late.
+  const exact = big && seconds !== null && kind === "on-time" && Math.abs(seconds) >= 60 ? ` (${preciseDelayText(seconds, t("min"))})` : "";
   const text = seconds === null
     ? t("delayUnknown")
-    : kind === "on-time" ? t("delayOnTime") : `${delayText(seconds, t("min"))} ${kind === "late" ? t("delayLate") : t("delayEarly")}`;
-  return <span className={`delay-badge ${kind} ${big ? "big" : ""}`}>{text}</span>;
+    : kind === "on-time" ? `${t("delayOnTime")}${exact}` : `${delayText(seconds, t("min"))} ${kind === "late" ? t("delayLate") : t("delayEarly")}`;
+  return <span className={`delay-badge ${kind} ${big ? "big" : ""}`} title={kind === "on-time" ? t("onTimeHint") : undefined}>{text}</span>;
 }
 
 function inMinutes(departure: Departure, t: T) {
@@ -46,7 +48,7 @@ function inMinutes(departure: Departure, t: T) {
 }
 
 /** One quiet line under the next stops: why the model expects what it does at the named stop. */
-function WhyLine({ stop, t }: { stop: NextStop; t: T }) {
+function WhyLine({ stop, t, language }: { stop: NextStop; t: T; language: Language }) {
   const range = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null
     ? `${t("likelyRange")}: ${preciseDelayText(stop.lower_delay_seconds, t("min"))} … ${preciseDelayText(stop.upper_delay_seconds, t("min"))}`
     : null;
@@ -54,7 +56,7 @@ function WhyLine({ stop, t }: { stop: NextStop; t: T }) {
     <p className="why-note">
       <span className="section-kicker">{t("whyThis")}: {stop.name}</span>
       <span className="sr-only">. </span>
-      <span lang="en">{stop.why?.summary}</span>
+      <span lang={language}>{stop.why?.summary}</span>
       {range && <small>{range}</small>}
     </p>
   );
@@ -207,7 +209,12 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
               <span className="timeline-times"><b>{clock(stop.predicted_at ?? stop.scheduled_at, language)}</b>{stop.predicted_at && <small>{t("scheduled")} {clock(stop.scheduled_at, language)}</small>}</span>
             </li>))}</ol>
         </>}
-        {(() => { const explained = firstExplained(data.next_stops); return explained && <WhyLine stop={explained} t={t}/>; })()}
+        {(() => {
+          const explained = firstExplained(data.next_stops);
+          const paused = pausedNoteKey(data.next_stops);
+          if (explained) return <WhyLine stop={explained} t={t} language={language}/>;
+          return paused && <p className="why-note why-paused" role="status">{t(paused)}</p>;
+        })()}
         <p className="estimate-note">{t("estimateNote")} {data.model.kind === "baseline" ? t("modelBaseline") : `${t("modelOther")}: ${data.model.name} ${data.model.version}.`}</p>
       </>}
     </>

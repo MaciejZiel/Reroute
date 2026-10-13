@@ -108,6 +108,9 @@ export interface NextStop {
   delay_seconds: number | null;
   lower_delay_seconds?: number | null;
   upper_delay_seconds?: number | null;
+  /** Only with a trained model: it answered, kept its last answer ("held"), or the baseline answered ("paused"). */
+  model_status?: "model" | "held" | "paused" | "out_of_range" | null;
+  pause_reason?: "no_vehicle" | "vehicle_report" | "last_stop" | "no_stop" | null;
   /** Present only when a trained model answered; the text is English. */
   why?: { summary: string; factors: { feature: string; effect_seconds: number; text: string }[] } | null;
 }

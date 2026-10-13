@@ -1,9 +1,9 @@
 | predictor | MAE s (bootstrap 95% interval) | RMSE s (bootstrap 95% interval) | bias s | MAE under 2 min | MAE 2 to 5 min | MAE 5 to 10 min | MAE 10 min or more |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| scheduled (zero delay) | 102.6 (95.3 to 110.1) | 157.1 (139.6 to 176.2) | -76.7 | 103.0 | 99.3 | 102.2 | 108.8 |
-| persistence (BaselinePredictor) | 44.8 (43.2 to 46.6) | 69.9 (63.7 to 76.4) | -14.1 | 19.1 | 31.3 | 48.7 | 70.0 |
-| historical median (line, stop, hour) | 119.9 (114.9 to 125.7) | 151.4 (139.7 to 166.2) | +64.3 | 110.7 | 116.3 | 121.6 | 126.5 |
-| calibrated persistence | 48.8 (47.3 to 50.5) | 72.1 (67.1 to 77.7) | +18.6 | 19.4 | 32.6 | 52.7 | 79.8 |
-| gradient boosted trees (median) | 41.1 (39.6 to 42.7) | 63.3 (57.8 to 69.6) | -7.6 | 16.5 | 28.3 | 44.7 | 65.2 |
+| scheduled (zero delay) | 104.1 (98.5 to 109.7) | 148.0 (138.3 to 158.8) | -80.4 | 107.7 | 102.9 | 103.5 | 105.9 |
+| persistence (BaselinePredictor) | 44.5 (43.2 to 45.9) | 67.3 (62.6 to 73.5) | -12.5 | 23.2 | 32.5 | 48.9 | 66.1 |
+| historical median (line, stop, hour) | 112.4 (108.6 to 116.5) | 136.9 (130.9 to 144.7) | +57.6 | 106.0 | 110.0 | 112.5 | 118.6 |
+| calibrated persistence | 49.6 (48.4 to 50.9) | 71.7 (67.4 to 77.4) | +21.7 | 23.2 | 34.2 | 53.6 | 79.7 |
+| gradient boosted trees (median) | 40.6 (39.6 to 41.7) | 58.7 (56.4 to 61.2) | -4.5 | 18.4 | 29.3 | 44.9 | 61.6 |
 
-80% interval on the test fold: model coverage 78.6% (77.9% to 79.4%), mean width 126 s; persistence plus empirical residual quantiles: coverage 87.3% (86.7% to 87.9%), mean width 191 s.
+80% interval on the test fold: model coverage 79.9% (79.2% to 80.6%), mean width 132 s; persistence plus empirical residual quantiles: coverage 87.8% (87.2% to 88.3%), mean width 198 s.

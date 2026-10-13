@@ -166,6 +166,10 @@ class NextStop(BaseModel):
     lower_delay_seconds: int | None = None
     upper_delay_seconds: int | None = None
     why: Why | None = None
+    model_status: Literal["model", "held", "paused", "out_of_range"] | None = Field(
+        default=None, description="Only with a trained model; see app.predict.Prediction"
+    )
+    pause_reason: Literal["no_vehicle", "vehicle_report", "last_stop", "no_stop"] | None = None
 
 
 class ModelInfo(BaseModel):
@@ -204,6 +208,8 @@ class PredictionItem(BaseModel):
     upper_delay_s: int | None
     basis: Literal["live_delay", "scheduled"]
     why: Why | None = None
+    model_status: Literal["model", "held", "paused", "out_of_range"] | None = None
+    pause_reason: Literal["no_vehicle", "vehicle_report", "last_stop", "no_stop"] | None = None
 
 
 class PredictionsResponse(BaseModel):

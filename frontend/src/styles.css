@@ -77,7 +77,8 @@ ul, ol { padding: 0; list-style: none; }
 .search-box, .vehicle-switch, .zoom-hint, .map-legend {
   background: rgb(21 29 27 / 0.94); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(8px);
 }
-.search-box { position: relative; }
+/* Above the cards that follow it: the dropdown overflows onto them and each has its own stacking context (backdrop-filter). */
+.search-box { position: relative; z-index: 2; }
 .search-box input {
   width: 100%; height: 44px; padding: 0 14px; border: 0; border-radius: var(--radius); background: transparent; font-size: 15px; color: var(--text);
 }
@@ -180,6 +181,7 @@ ul, ol { padding: 0; list-style: none; }
 .panel-note { margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--gold); background: var(--surface-2); border-radius: 0 8px 8px 0; color: var(--text-2); font-size: 13px; line-height: 1.5; }
 .form-error { margin-bottom: 10px; color: #ffb199; font-size: 13px; }
 .why-note { display: grid; gap: 4px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.why-paused { color: var(--muted); font-size: 12px; }
 .why-note small { color: var(--muted); font-size: 12px; }
 .estimate-note { margin-top: 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
