@@ -7,3 +7,4 @@
 | https://www.npmjs.com/package/vitest | vitest (frontend dev dependency, 5.0.2) | MIT | https://github.com/vitest-dev/vitest/blob/main/LICENSE |
 | https://www.npmjs.com/package/oxlint | oxlint (frontend dev dependency, 1.85.0) | MIT | https://github.com/oxc-project/oxc/blob/main/LICENSE |
 | https://openfreemap.org/ | OpenFreeMap vector tiles and glyphs (public instance, no API key; map data from OpenStreetMap, schema OpenMapTiles) | MIT (service code), ODbL (OpenStreetMap data), BSD-3-Clause (OpenMapTiles code), CC-BY-4.0 (OpenMapTiles design) | https://github.com/hyperknot/openfreemap/blob/main/LICENSE.md |
+| https://www.npmjs.com/package/@types/node | @types/node (frontend dev dependency, 24.19.0) | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/blob/master/LICENSE |
