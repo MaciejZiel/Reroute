@@ -15,18 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
 from sqlalchemy import distinct, func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .data_sources import LiveVehicleSnapshot, get_live_vehicles
 from .database import get_db
-from .delays import (
-    EARLY_LIMIT_S,
-    LATE_LIMIT_S,
-    VehicleDelay,
-    delays_for_snapshot,
-    demo_line_delays,
-)
+from .demo_data import demo_line_delays
+from .live import ensure_fresh
 from .models import (
     DelaySnapshot,
     FeedMetadata,
@@ -35,7 +28,6 @@ from .models import (
     RouteStop,
     SimulationRecord,
     Stop,
-    VehiclePosition,
 )
 from .routing import Detour as RoutingDetour
 from .routing import (
@@ -67,6 +59,8 @@ from .schemas import Detour as DetourResponse
 
 router = APIRouter(prefix="/api")
 FEED_ID = "warsaw-static-gtfs"
+EARLY_LIMIT_S = -60  # earlier than this many seconds is "early"
+LATE_LIMIT_S = 180  # later than this many seconds is "late"
 DEMO_NOTICE = "Demo network. Vehicles and routes are fictional and do not describe real service."
 
 
@@ -140,62 +134,6 @@ def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     )
 
 
-@router.get("/vehicles", response_model=FeatureCollection, tags=["vehicles"])
-def vehicles(db: Session = Depends(get_db)) -> FeatureCollection:
-    live_snapshot = get_live_vehicles(db)
-    if live_snapshot.vehicles:
-        delays = {item.vehicle_id: item.delay_seconds for item in _safe_delays(db, live_snapshot)}
-        return FeatureCollection(
-            features=[
-                _feature(
-                    vehicle.id,
-                    {"type": "Point", "coordinates": [vehicle.longitude, vehicle.latitude]},
-                    {
-                        "entity_type": "vehicle",
-                        "vehicle_number": vehicle.id,
-                        "line": vehicle.line,
-                        "mode": vehicle.mode,
-                        "observed_at": vehicle.observed_at.isoformat(),
-                        "is_stale": vehicle.is_stale,
-                        "delay_seconds": delays.get(vehicle.id),
-                    },
-                )
-                for vehicle in live_snapshot.vehicles
-            ],
-            data_mode="live",
-            observed_at=live_snapshot.observed_at,
-            notice=_vehicle_notice(live_snapshot.observed_at),
-        )
-
-    vehicles = db.scalars(select(VehiclePosition).where(VehiclePosition.is_demo.is_(True))).all()
-    newest = max((vehicle.observed_at for vehicle in vehicles), default=None)
-    features = [
-        _feature(
-            f"{vehicle.vehicle_number}-{vehicle.id}",
-            {"type": "Point", "coordinates": [vehicle.longitude, vehicle.latitude]},
-            {
-                "entity_type": "vehicle",
-                "vehicle_number": vehicle.vehicle_number,
-                "line": vehicle.line,
-                "mode": vehicle.mode,
-                "observed_at": vehicle.observed_at.isoformat(),
-                "is_stale": False,
-            },
-        )
-        for vehicle in vehicles
-    ]
-    return FeatureCollection(
-        features=features,
-        data_mode="demo",
-        observed_at=newest,
-        notice=(
-            "Live vehicle positions are unavailable. Showing fictional demo vehicles."
-            if live_snapshot.error != "not fetched"
-            else DEMO_NOTICE
-        ),
-    )
-
-
 @router.get("/punctuality", response_model=PunctualityResponse, tags=["vehicles"])
 def punctuality(
     minutes: int = Query(default=120, ge=10, le=24 * 60),
@@ -205,7 +143,7 @@ def punctuality(
     now = datetime.now(UTC)
     has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
     if has_schedule:
-        _safe_delays(db, get_live_vehicles(db))
+        ensure_fresh(db)
         rows = db.scalars(
             select(DelaySnapshot)
             .where(DelaySnapshot.observed_at >= now - timedelta(minutes=minutes))
@@ -244,14 +182,6 @@ def punctuality(
         lines=_line_punctuality(rows),
         notice=notice,
     )
-
-
-def _safe_delays(db: Session, snapshot: LiveVehicleSnapshot) -> list[VehicleDelay]:
-    try:
-        return delays_for_snapshot(db, snapshot)
-    except SQLAlchemyError:
-        db.rollback()
-        return []
 
 
 def _line_punctuality(rows: list[DelaySnapshot]) -> list[LinePunctuality]:

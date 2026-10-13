@@ -2,12 +2,9 @@
 
 import csv
 import zipfile
-from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from google.transit import gtfs_realtime_pb2
 
 from app import data_sources
 
@@ -155,68 +152,6 @@ def test_parse_schedule_rejects_an_incomplete_archive(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing required files"):
         data_sources.parse_schedule(archive_path)
-
-
-def test_live_vehicle_feed_maps_route_and_ignores_out_of_area_positions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    feed = gtfs_realtime_pb2.FeedMessage()
-    feed.header.gtfs_realtime_version = "2.0"
-    feed.header.timestamp = int(datetime.now(UTC).timestamp())
-    entity = feed.entity.add()
-    entity.id = "vehicle-1"
-    entity.vehicle.vehicle.id = "V/9/3"
-    entity.vehicle.vehicle.label = "fleet-9"
-    entity.vehicle.position.latitude = 52.23
-    entity.vehicle.position.longitude = 21.01
-    entity.vehicle.timestamp = feed.header.timestamp
-    outside = feed.entity.add()
-    outside.id = "vehicle-outside"
-    outside.vehicle.position.latitude = 50.0
-    outside.vehicle.position.longitude = 19.0
-
-    class FakeResponse:
-        content = feed.SerializeToString()
-
-        @staticmethod
-        def raise_for_status() -> None:
-            return None
-
-    class FakeSession:
-        @staticmethod
-        def scalars(_query: object) -> SimpleNamespace:
-            return SimpleNamespace(
-                all=lambda: [SimpleNamespace(id="tram-9", short_name="9", mode="tram")]
-            )
-
-    monkeypatch.setattr(data_sources.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
-    monkeypatch.setattr(data_sources, "_vehicle_cache_until", 0)
-    monkeypatch.setattr(data_sources, "_vehicle_cache", data_sources.LiveVehicleSnapshot((), None))
-
-    snapshot = data_sources.get_live_vehicles(FakeSession())  # type: ignore[arg-type]
-
-    assert len(snapshot.vehicles) == 1
-    vehicle = snapshot.vehicles[0]
-    assert vehicle.id == "V/9/3"
-    assert vehicle.line == "9"
-    assert vehicle.mode == "tram"
-    assert vehicle.is_stale is False
-
-
-def test_live_feed_failure_leaves_a_clear_demo_fallback_signal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_request(*_args: object, **_kwargs: object) -> None:
-        raise data_sources.httpx.ConnectError("feed offline")
-
-    monkeypatch.setattr(data_sources.httpx, "get", fail_request)
-    monkeypatch.setattr(data_sources, "_vehicle_cache_until", 0)
-    monkeypatch.setattr(data_sources, "_vehicle_cache", data_sources.LiveVehicleSnapshot((), None))
-
-    snapshot = data_sources.get_live_vehicles(SimpleNamespace())  # type: ignore[arg-type]
-
-    assert snapshot.vehicles == ()
-    assert snapshot.error == "feed offline"
 
 
 def test_parse_schedule_times_segments_on_the_busiest_service_day(tmp_path: Path) -> None:
