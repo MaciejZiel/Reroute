@@ -80,7 +80,7 @@ The full model card, with what it knows and does not know, is [below](#delay-mod
 - **Line focus.** Pick a line: the map highlights its route and stops and shows only that line's vehicles, with the line number on each, a heading wedge and the delay colour as the outline. Vehicles glide between the 15-second updates. When you came via a stop, a switch limits the view to "Heading to my stop" (the live vehicles that still have a departure at that stop, so direction is handled by the timetable) or "All of this line". Service alerts are shown.
 - **Vehicle detail.** Click a vehicle: delay against the timetable, status (waiting at the first stop, off route, stale position) and the next stops with scheduled and expected times.
 - **Delay colours.** Vehicle outlines are green (on time), orange (more than 3 min late), blue (more than 1 min early) or grey (unknown).
-- **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes.
+- **Punctuality (secondary).** Per-line share of early, on-time and late vehicles and a delay trend, from the per-minute rollup the collector writes (windows of 30 minutes to 6 hours).
 - **Bilingual, responsive UI** (Polish and English; on narrow screens the panel sits under the map).
 - **Data pipeline for prediction.** The collector stores per-vehicle observations, derived stop arrival events and service alerts; `app/features.py` exports leak-free training rows and `/api/predictions` is the contract a trained model plugs into (the LightGBM delay model is the default; when its inputs are stale the current delay persists).
 
@@ -148,7 +148,15 @@ Schema changes are plain SQL files in `backend/app/migrations/`, applied at star
 
 ## Deployment on a small server
 
-Behind nginx on a self-hosted server, include `deploy/termux/nginx-http.conf` (http block) and `deploy/termux/nginx-location.conf` (server block): per-visitor `limit_req` zones keyed on `CF-Connecting-IP`, stricter for the vehicle and prediction endpoints, which read recent arrivals and may compute an explanation. The configuration was checked with `nginx -t`.
+Behind nginx on a self-hosted server, use the three files in `deploy/termux/`:
+
+- `nginx-http.conf` (http block): the per-visitor `limit_req` zones, keyed on `CF-Connecting-IP`. It no longer sets `limit_req_status`, so it does not change the status code of other sites on the same nginx.
+- `nginx-location.conf` (inside the server block of the host): `limit_req_status 429` for this host only, a strict zone (1 request/s, burst 5) for the endpoints that cost real work (`/api/punctuality`, `/api/stops/{id}/departures`, `/api/vehicles/...`, `/api/predictions`), a general zone for the rest of `/api/`, `Cache-Control` (`index.html` no-cache, hashed `/assets/` immutable for a year, icons for a day, nothing caches a 404) and a real 404 for `/robots.txt` and `/.well-known/` instead of the SPA page. The `location /` SPA fallback stays in your own server block.
+- `nginx-headers.conf`: Content-Security-Policy, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and `Permissions-Policy`. The CSP allows exactly what the app loads (own scripts and styles, Google Fonts, OpenFreeMap tiles and glyphs, MapLibre's blob worker); it was checked against the production build in Chromium (map renders, no violations). It is included at server level and again in every location that sets its own `add_header`, because nginx drops inherited headers there. Set the absolute path of the checkout in the `include` lines.
+
+The configuration was checked with `nginx -t` and with curl against a running nginx (headers, 404s, 429 after the burst).
+
+The API protects itself as well: `/api/punctuality` accepts at most 360 minutes, sums windows over an hour in 5-minute steps in SQL and caches each answer for 60 s; departures predict only the rows that can still be shown; `/api/vehicles` reuses its serialised body for the same poll (at most 10 s); every request statement is cancelled after `DB_STATEMENT_TIMEOUT_MS` (5000) and waits at most `DB_POOL_TIMEOUT_S` (5) for a connection, both ending as `503` with `Retry-After`. Migrations, the collector, the timetable import and the training export use a separate engine without the statement timeout. When the real timetable is loaded but no vehicle positions arrive, `/api/vehicles` answers with no vehicles, `feed_outage: true` and a notice saying so; fictional demo vehicles appear only on a demo installation.
 
 `docker-compose.prod.yml` runs nginx (serving the built frontend and proxying `/api`), the API, the collector and Postgres; only port 80 is published.
 
