@@ -184,6 +184,8 @@ ul, ol { padding: 0; list-style: none; }
 
 .panel-note { margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--gold); background: var(--surface-2); border-radius: 0 8px 8px 0; color: var(--text-2); font-size: 13px; line-height: 1.5; }
 .form-error { margin-bottom: 10px; color: #ffb199; font-size: 13px; }
+.form-error p { margin: 0 0 8px; }
+.retry-inline { min-height: 36px; padding: 0 14px; font-size: 13px; }
 .why-note { display: grid; gap: 4px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: 13px; line-height: 1.5; }
 .why-paused { color: var(--muted); font-size: 12px; }
 .why-note small { color: var(--muted); font-size: 12px; }

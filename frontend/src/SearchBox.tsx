@@ -8,6 +8,7 @@ type T = (key: TranslationKey) => string;
 export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMatch) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StopMatch[] | null>(null);
+  const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -15,12 +16,12 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
 
   useEffect(() => {
     const text = query.trim();
-    if (!text) { setResults(null); return; }
+    if (!text) { setResults(null); setFailed(false); return; }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       searchStops(text, controller.signal)
-        .then((response) => { setResults(response.results); setActive(0); })
-        .catch(() => { if (!controller.signal.aborted) setResults([]); });
+        .then((response) => { setResults(response.results); setFailed(false); setActive(0); })
+        .catch(() => { if (!controller.signal.aborted) { setResults([]); setFailed(true); } });
     }, 180);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [query]);
@@ -31,7 +32,7 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
     return () => document.removeEventListener("pointerdown", close);
   }, []);
 
-  const pick = (match: StopMatch) => { setQuery(""); setResults(null); setOpen(false); onPick(match); };
+  const pick = (match: StopMatch) => { setQuery(""); setResults(null); setFailed(false); setOpen(false); onPick(match); };
   const showList = open && results !== null;
 
   return (
@@ -59,7 +60,7 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
       />
       {showList && (
         <ul className="search-results" id={listId} role="listbox">
-          {results.length === 0 && <li className="search-empty">{t("searchNoResults")}</li>}
+          {results.length === 0 && <li className="search-empty">{t(failed ? "searchError" : "searchNoResults")}</li>}
           {results.map((match, index) => (
             <li key={match.id} id={`${listId}-${index}`} role="option" aria-selected={index === active}
               className={index === active ? "active" : ""}
