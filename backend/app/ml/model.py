@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import replace
@@ -103,6 +104,8 @@ class ModelPredictor:
         self._fallback = BaselinePredictor()
         self._explained: dict[tuple, tuple[float, Prediction]] = {}
         self._last: dict[tuple, tuple[float, Prediction]] = {}
+        # Requests run in a thread pool: both caches are read and replaced from several threads.
+        self._lock = threading.Lock()
 
     def _cached_explained(self, inputs: dict[str, float], lang: str) -> Prediction:
         # The seconds that pass between two polls (age of the report, time since the last stop)
@@ -116,27 +119,33 @@ class ModelPredictor:
             ),
         )
         now = time.monotonic()
-        hit = self._explained.get(key)
+        with self._lock:
+            hit = self._explained.get(key)
         if hit and hit[0] > now:
             return hit[1]
-        prediction = self.model.predict_one(inputs, True, lang)
-        if len(self._explained) >= self.CACHE_SIZE:
-            self._explained = {k: v for k, v in self._explained.items() if v[0] > now}
+        prediction = self.model.predict_one(inputs, True, lang)  # slow: outside the lock
+        with self._lock:
             if len(self._explained) >= self.CACHE_SIZE:
-                self._explained.clear()
-        self._explained[key] = (now + self.CACHE_SECONDS, prediction)
+                self._explained = {k: v for k, v in self._explained.items() if v[0] > now}
+                if len(self._explained) >= self.CACHE_SIZE:
+                    self._explained.clear()
+            self._explained[key] = (now + self.CACHE_SECONDS, prediction)
         return prediction
 
     def _remember(self, key: tuple, prediction: Prediction) -> None:
         now = time.monotonic()
-        if len(self._last) >= self.HOLD_SIZE:
-            self._last = {k: v for k, v in self._last.items() if now - v[0] <= self.HOLD_SECONDS}
+        with self._lock:
             if len(self._last) >= self.HOLD_SIZE:
-                self._last.clear()
-        self._last[key] = (now, prediction)
+                self._last = {
+                    k: v for k, v in self._last.items() if now - v[0] <= self.HOLD_SECONDS
+                }
+                if len(self._last) >= self.HOLD_SIZE:
+                    self._last.clear()
+            self._last[key] = (now, prediction)
 
     def _held(self, key: tuple) -> Prediction | None:
-        found = self._last.get(key)
+        with self._lock:
+            found = self._last.get(key)
         if found and time.monotonic() - found[0] <= self.HOLD_SECONDS:
             return replace(found[1], model_status="held")
         return None
