@@ -19,6 +19,8 @@ class FeatureCollection(BaseModel):
     data_mode: Literal["live", "demo"]
     observed_at: datetime | None
     notice: str
+    # True when the schedule is real but the live positions are unavailable (feed outage).
+    feed_outage: bool = False
 
 
 class HealthResponse(BaseModel):

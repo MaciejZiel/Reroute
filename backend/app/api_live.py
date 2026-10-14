@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
 from sqlalchemy import select, text
@@ -15,7 +16,14 @@ from .api import DEMO_NOTICE, _vehicle_notice
 from .database import get_db
 from .departures import Candidate, by_route, explain_first, trip_stops, upcoming
 from .features import Target, live_feature_rows
-from .live import LiveVehicle, fallback_error, snapshot, vehicle_by_id, vehicles_of_trips
+from .live import (
+    LiveVehicle,
+    fallback_error,
+    newest_observed_at,
+    snapshot,
+    vehicle_by_id,
+    vehicles_of_trips,
+)
 from .models import Route, RouteStop, Stop, TripSchedule, VehiclePosition
 from .predict import Prediction, get_predictor
 from .schemas import (
@@ -78,8 +86,21 @@ def _summary(stop: StopInfo) -> StopSummary:
     )
 
 
+AT_MIN = datetime(2000, 1, 1, tzinfo=UTC)
+AT_MAX = datetime(2100, 1, 1, tzinfo=UTC)
+
+
 def _now(at: datetime | None) -> datetime:
-    return at.astimezone(UTC) if at else datetime.now(UTC)
+    """The request clock: the real time, or the testing override when it is a sane date."""
+    if at is None:
+        return datetime.now(UTC)
+    try:
+        moment = at.astimezone(UTC)
+    except (OverflowError, ValueError):
+        moment = None
+    if moment is None or not AT_MIN <= moment <= AT_MAX:
+        raise HTTPException(status_code=422, detail="at must be between 2000 and 2100")
+    return moment
 
 
 @router.get("/stops", response_model=StopSearchResponse, tags=["stops"])
@@ -139,7 +160,9 @@ def stop_departures(
     lines = lines_at(db, [platform.id for platform in platforms], is_demo)
     names = {route_id: short for route_id, short, _, _ in lines}
     horizon = timedelta(minutes=horizon_minutes)
-    grouped = by_route(upcoming(db, platforms, now, horizon, names)) if not is_demo else {}
+    grouped = (
+        {} if is_demo else by_route(upcoming(db, platforms, now, horizon, names, per_line=per_line))
+    )
     platform_of = {platform.id: platform.platform for platform in platforms}
     result = []
     for route_id, short_name, long_name, mode in lines:
@@ -277,14 +300,51 @@ def _vehicle_collection(
     )
 
 
+VEHICLES_CACHE_SECONDS = 10.0
+# (newest observed_at, expires at monotonic time, serialised body). A vehicle's "stale" flag and
+# delay depend on the clock, so the body is rebuilt after a few seconds even without a new poll.
+_vehicles_cache: tuple[datetime, float, bytes] | None = None
+
+
+def _outage_notice() -> str:
+    detail = f" ({fallback_error()})" if fallback_error() else ""
+    return (
+        f"Live vehicle positions are unavailable{detail}: the feed is not delivering data "
+        "right now. The timetable and departures are still shown; vehicles will return "
+        "when the feed does."
+    )
+
+
 @router.get("/vehicles", response_model=FeatureCollection, tags=["vehicles"])
-def vehicles(db: DbSession) -> FeatureCollection:
-    """All live vehicles; clearly labelled demo vehicles when the feed is unavailable."""
-    live = snapshot(db)
+def vehicles(db: DbSession) -> Response:
+    """All live vehicles. With the real timetable and no positions it says so (an outage);
+    only a demo installation shows clearly labelled fictional vehicles."""
+    global _vehicles_cache
+    newest = newest_observed_at(db)
+    cached = _vehicles_cache
+    if (
+        newest is not None
+        and cached is not None
+        and cached[0] == newest
+        and time.monotonic() < cached[1]
+    ):
+        return Response(cached[2], media_type="application/json")
+    live = snapshot(db, refresh=False)
     if live.vehicles:
-        return _vehicle_collection(live.vehicles, live.observed_at)
+        body = _vehicle_collection(live.vehicles, live.observed_at).model_dump_json().encode()
+        _vehicles_cache = (live.observed_at, time.monotonic() + VEHICLES_CACHE_SECONDS, body)
+        return Response(body, media_type="application/json")
+    if not _is_demo(db):
+        outage = FeatureCollection(
+            features=[],
+            data_mode="live",
+            observed_at=None,
+            notice=_outage_notice(),
+            feed_outage=True,
+        )
+        return Response(outage.model_dump_json().encode(), media_type="application/json")
     demo = db.scalars(select(VehiclePosition).where(VehiclePosition.is_demo.is_(True))).all()
-    return FeatureCollection(
+    collection = FeatureCollection(
         features=[
             Feature(
                 id=f"{vehicle.vehicle_number}-{vehicle.id}",
@@ -302,13 +362,9 @@ def vehicles(db: DbSession) -> FeatureCollection:
         ],
         data_mode="demo",
         observed_at=max((vehicle.observed_at for vehicle in demo), default=None),
-        notice=(
-            f"Live vehicle positions are unavailable ({fallback_error()}). "
-            "Showing fictional demo vehicles."
-            if fallback_error()
-            else DEMO_NOTICE
-        ),
+        notice=DEMO_NOTICE,
     )
+    return Response(collection.model_dump_json().encode(), media_type="application/json")
 
 
 @router.get("/lines/{line}/vehicles", response_model=FeatureCollection, tags=["lines"])
@@ -431,7 +487,7 @@ def predictions(
         _require_timetable(db, is_demo)
         names = {route_id: short for route_id, short, _, _ in lines_at(db, [stop.id], is_demo)}
         modes = {route_id: mode for route_id, _, _, mode in lines_at(db, [stop.id], is_demo)}
-        candidates = upcoming(db, [stop], now, line_names=names)
+        candidates = upcoming(db, [stop], now, line_names=names, total=limit)
         candidates.sort(key=lambda item: item.expected_at)
         if predictor.kind == "model":
             explain_first(db, candidates[:limit], names, now, lang)

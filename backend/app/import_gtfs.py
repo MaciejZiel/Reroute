@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .data_sources import DEFAULT_GTFS_URL, download_schedule, import_schedule, parse_schedule
-from .database import SessionLocal
+from .database import AdminSession
 
 
 def main() -> None:
@@ -24,7 +24,7 @@ def main() -> None:
     schedule = parse_schedule(archive_path, downloaded_at=datetime.now(UTC))
     if not schedule.routes or not schedule.stops:
         raise SystemExit("GTFS archive contains no importable bus or tram network")
-    with SessionLocal() as session:
+    with AdminSession() as session:
         imported_routes = import_schedule(session, schedule)
     print(
         f"Imported {imported_routes} routes, {len(schedule.stops)} stops, "

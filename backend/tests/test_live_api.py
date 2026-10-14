@@ -11,17 +11,19 @@ from shapely.geometry import LineString, Point
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from app import live, predict
+from app import api, api_live, live, predict
 from app.collector import store
 from app.database import get_db
 from app.main import app
 from app.models import (
+    DelaySnapshot,
     PatternStop,
     Route,
     RouteStop,
     Stop,
     StopPattern,
     TripSchedule,
+    VehiclePosition,
 )
 from app.stops import fold, natural_key
 from app.timeutil import service_instant, service_seconds
@@ -131,6 +133,7 @@ def client(network: Session, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch)
     from app import stops
 
     stops._cache.clear()
+    monkeypatch.setattr(api_live, "_vehicles_cache", None)
     yield TestClient(app)
     app.dependency_overrides.clear()
     stops._cache.clear()
@@ -479,3 +482,195 @@ def test_network_marks_each_stop_with_the_modes_that_serve_it(client: TestClient
     assert modes["100102"] == "bus"
     assert modes["300101"] == "both"
     assert modes["999901"] == "bus"  # no route calls there: falls back to bus
+
+
+def _snapshots(
+    db: Session, now: datetime, minutes: int, lines: tuple[str, ...], vehicles: int = 4
+) -> None:
+    minute = now.replace(second=0, microsecond=0)
+    db.add_all(
+        DelaySnapshot(
+            observed_at=minute - timedelta(minutes=age),
+            line=line,
+            mode="bus",
+            vehicles=vehicles,
+            mean_delay_seconds=120,
+            median_delay_seconds=90,
+            early=1,
+            on_time=2,
+            late=1,
+        )
+        for age in range(minutes)
+        for line in lines
+    )
+    db.commit()
+
+
+@pytest.fixture
+def punctuality_client(client: TestClient) -> Iterator[TestClient]:
+    api._punctuality_cache.clear()
+    yield client
+    api._punctuality_cache.clear()
+
+
+def test_punctuality_window_is_capped_and_long_windows_are_bucketed(
+    punctuality_client: TestClient, db: Session
+) -> None:
+    _snapshots(db, datetime.now(UTC), 360, ("9", "175"))
+    assert punctuality_client.get("/api/punctuality?minutes=1440").status_code == 422
+
+    short = punctuality_client.get("/api/punctuality?minutes=30").json()
+    long = punctuality_client.get("/api/punctuality?minutes=360").json()
+
+    by_line = {line["line"]: line for line in short["lines"]}
+    assert len(by_line["9"]["series"]) in (30, 31)  # one point per stored minute
+    assert by_line["9"]["mean_delay_minutes"] == 2.0
+    long_line = {line["line"]: line for line in long["lines"]}["9"]
+    assert 70 <= len(long_line["series"]) <= 73  # five-minute steps
+    assert long_line["observations"] == 4 * 360
+    assert long_line["series"][1]["vehicles"] == 4
+    assert long_line["on_time_share"] == 0.5
+    assert long["snapshots"] == 360
+
+
+def test_punctuality_answer_is_cached_for_a_minute(
+    punctuality_client: TestClient, db: Session
+) -> None:
+    now = datetime.now(UTC)
+    _snapshots(db, now, 20, ("9",))
+    first = punctuality_client.get("/api/punctuality?minutes=60").json()
+    _snapshots(db, now - timedelta(minutes=30), 5, ("175",))
+    again = punctuality_client.get("/api/punctuality?minutes=60").json()
+    assert again == first  # served from the cache
+    api._punctuality_cache.clear()
+    fresh = punctuality_client.get("/api/punctuality?minutes=60").json()
+    assert {line["line"] for line in fresh["lines"]} == {"9", "175"}
+
+
+@pytest.mark.parametrize(
+    "at",
+    [
+        "9999-12-31T23:59:59Z",
+        "0001-01-01T00:00:00Z",
+        "1999-12-31T23:59:59Z",
+        "2100-01-01T00:00:01Z",
+    ],
+)
+def test_an_absurd_at_is_a_422_not_a_500(client: TestClient, at: str) -> None:
+    response = client.get("/api/stops/100101/departures", params={"at": at})
+    assert response.status_code == 422
+
+
+def test_only_the_departures_that_can_be_shown_are_predicted(
+    client: TestClient, network: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[int] = []
+
+    class Counting:
+        name, version, kind = "counting", "1", "baseline"
+
+        def predict(self, rows, explain=False, lang="en"):
+            seen.append(len(rows))
+            return [predict.Prediction(0) for _ in rows]
+
+    monkeypatch.setattr(predict, "_predictor", Counting())
+    body = _departures(client, "100101", _local(DAY, 12, 0), per_line=1, horizon_minutes=360)
+
+    tram = next(line for line in body["lines"] if line["line"] == "9")
+    assert [d["scheduled_at"][11:16] for d in tram["departures"]] == ["10:00"]
+    # the station has 7 trips in the next six hours; with per_line=1 the line of 6 trips is cut
+    # to 1 + the slack, and the single trip of the other line stays: 4 + 1 rows are predicted
+    assert sum(seen) == 5
+
+
+def test_vehicle_body_is_built_once_per_poll(
+    client: TestClient, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    store.upsert_latest(pg_engine, [_vehicle("t", 100, 1, now)])
+    first = client.get("/api/vehicles")
+    built: list[int] = []
+    original = api_live._vehicle_collection
+    monkeypatch.setattr(api_live, "_vehicle_collection", lambda *a: built.append(1) or original(*a))
+
+    again = client.get("/api/vehicles")
+
+    assert again.content == first.content and not built  # same poll: the stored body is reused
+    store.upsert_latest(pg_engine, [_vehicle("t", 100, 1, now + timedelta(seconds=20))])
+    client.get("/api/vehicles")
+    assert built  # a new poll builds a new body
+
+
+def test_a_feed_outage_on_the_real_network_says_so_instead_of_showing_demo_vehicles(
+    client: TestClient, network: Session
+) -> None:
+    network.add(
+        VehiclePosition(
+            vehicle_number="D1",
+            line="9",
+            mode="tram",
+            latitude=52.2,
+            longitude=21.0,
+            location=from_shape(Point(21.0, 52.2), srid=4326),
+            observed_at=datetime.now(UTC),
+            is_demo=True,
+        )
+    )
+    network.commit()
+
+    body = client.get("/api/vehicles").json()
+
+    assert body["data_mode"] == "live" and body["feed_outage"] is True
+    assert body["features"] == [] and "unavailable" in body["notice"]
+
+
+def test_a_demo_installation_still_shows_the_labelled_demo_vehicles(
+    client: TestClient, network: Session
+) -> None:
+    network.execute(Route.__table__.update().values(is_demo=True))
+    network.add(
+        VehiclePosition(
+            vehicle_number="D1",
+            line="9",
+            mode="tram",
+            latitude=52.2,
+            longitude=21.0,
+            location=from_shape(Point(21.0, 52.2), srid=4326),
+            observed_at=datetime.now(UTC),
+            is_demo=True,
+        )
+    )
+    network.commit()
+
+    body = client.get("/api/vehicles").json()
+
+    assert body["data_mode"] == "demo" and body["feed_outage"] is False
+    assert len(body["features"]) == 1
+
+
+def test_concurrent_first_requests_build_the_network_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    api._network_cache.clear()
+    builds: list[int] = []
+    original = api._network_collection
+
+    def slow(*args: object):
+        builds.append(1)
+        threading.Event().wait(0.3)
+        return original(*args)
+
+    monkeypatch.setattr(api, "_network_collection", slow)
+    statuses: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: statuses.append(client.get("/api/network").status_code))
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert statuses == [200] * 4 and len(builds) == 1

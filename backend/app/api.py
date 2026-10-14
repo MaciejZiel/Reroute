@@ -3,14 +3,17 @@
 import csv
 import gzip
 import io
+import threading
+import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from statistics import median
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .database import get_db
@@ -53,6 +56,7 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
 
 
 _network_cache: dict[object, tuple[bytes, bytes]] = {}
+_network_lock = threading.Lock()
 
 
 @router.get("/network", response_model=FeatureCollection, tags=["network"])
@@ -60,11 +64,16 @@ def network(request: Request, db: Session = Depends(get_db)) -> Response:
     """The whole network as GeoJSON, serialised and gzipped once per imported timetable."""
     has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
     key = (has_schedule, _network_version(db, not has_schedule))
-    if key not in _network_cache:
-        body = _network_collection(db, has_schedule).model_dump_json().encode()
-        _network_cache.clear()
-        _network_cache[key] = (body, gzip.compress(body, compresslevel=6))
-    body, compressed = _network_cache[key]
+    entry = _network_cache.get(key)
+    if entry is None:
+        with _network_lock:  # one request builds it, concurrent ones wait for the same result
+            entry = _network_cache.get(key)
+            if entry is None:
+                body = _network_collection(db, has_schedule).model_dump_json().encode()
+                entry = (body, gzip.compress(body, compresslevel=6))
+                _network_cache.clear()
+                _network_cache[key] = entry
+    body, compressed = entry
     headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache"}
     if "gzip" in request.headers.get("accept-encoding", ""):
         headers["Content-Encoding"] = "gzip"
@@ -126,63 +135,189 @@ def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     )
 
 
+PUNCTUALITY_MAX_MINUTES = 6 * 60
+PUNCTUALITY_CACHE_SECONDS = 60.0
+# Windows longer than this are summed into 5-minute buckets in SQL, so the response stays a
+# few hundred KB however many snapshots lie in the window.
+PUNCTUALITY_FINE_MINUTES = 60
+_punctuality_cache: dict[int, tuple[float, PunctualityResponse]] = {}
+_punctuality_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _Bucket:
+    """The snapshots of one line in one time bucket, summed in the database."""
+
+    observed_at: datetime
+    line: str
+    mode: str
+    snapshots: int
+    vehicles: int  # summed over the snapshots: the number of vehicle observations
+    weighted_delay_s: int  # sum of mean delay * vehicles
+    median_delay_s: float  # median of the snapshot medians inside the bucket
+    early: int
+    on_time: int
+    late: int
+
+
+def _bucket_rows(db: Session, since: datetime, bucket_minutes: int) -> list[_Bucket]:
+    observed = DelaySnapshot.observed_at
+    bucket = func.date_bin(
+        text(f"interval '{int(bucket_minutes)} minutes'"),
+        observed,
+        text("timestamptz '2000-01-01'"),
+    ).label("bucket")
+    rows = db.execute(
+        select(
+            bucket,
+            DelaySnapshot.line,
+            DelaySnapshot.mode,
+            func.count().label("snapshots"),
+            func.sum(DelaySnapshot.vehicles).label("vehicles"),
+            func.sum(DelaySnapshot.mean_delay_seconds * DelaySnapshot.vehicles).label("weighted"),
+            func.percentile_cont(0.5).within_group(DelaySnapshot.median_delay_seconds).label("med"),
+            func.sum(DelaySnapshot.early).label("early"),
+            func.sum(DelaySnapshot.on_time).label("on_time"),
+            func.sum(DelaySnapshot.late).label("late"),
+        )
+        .where(observed >= since)
+        .group_by(bucket, DelaySnapshot.line, DelaySnapshot.mode)
+        .order_by(bucket)
+    ).all()
+    return [
+        _Bucket(
+            row.bucket,
+            row.line,
+            row.mode,
+            row.snapshots,
+            int(row.vehicles),
+            int(row.weighted),
+            float(row.med),
+            int(row.early),
+            int(row.on_time),
+            int(row.late),
+        )
+        for row in rows
+    ]
+
+
 @router.get("/punctuality", response_model=PunctualityResponse, tags=["vehicles"])
 def punctuality(
-    minutes: int = Query(default=120, ge=10, le=24 * 60),
+    minutes: int = Query(default=120, ge=10, le=PUNCTUALITY_MAX_MINUTES),
     db: Session = Depends(get_db),
 ) -> PunctualityResponse:
     """Per-line delay history estimated from live positions against the timetable."""
     now = datetime.now(UTC)
     has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
-    if has_schedule:
-        ensure_fresh(db)
-        rows = db.scalars(
-            select(DelaySnapshot)
-            .where(DelaySnapshot.observed_at >= now - timedelta(minutes=minutes))
-            .order_by(DelaySnapshot.observed_at)
-        ).all()
-        notice = (
+    if not has_schedule:
+        return _demo_punctuality(db, now, minutes)
+    ensure_fresh(db)
+    cached = _punctuality_cache.get(minutes)
+    if cached and time.monotonic() - cached[0] < PUNCTUALITY_CACHE_SECONDS:
+        return cached[1]
+    with _punctuality_lock:  # one visitor computes, the others wait for the same answer
+        cached = _punctuality_cache.get(minutes)
+        if cached and time.monotonic() - cached[0] < PUNCTUALITY_CACHE_SECONDS:
+            return cached[1]
+        response = _live_punctuality(db, now, minutes)
+        _punctuality_cache[minutes] = (time.monotonic(), response)
+    return response
+
+
+def _live_punctuality(db: Session, now: datetime, minutes: int) -> PunctualityResponse:
+    since = now - timedelta(minutes=minutes)
+    bucket_minutes = 1 if minutes <= PUNCTUALITY_FINE_MINUTES else 5
+    buckets = _bucket_rows(db, since, bucket_minutes)
+    seen = db.execute(
+        select(
+            func.count(func.distinct(DelaySnapshot.observed_at)),
+            func.min(DelaySnapshot.observed_at),
+            func.max(DelaySnapshot.observed_at),
+        ).where(DelaySnapshot.observed_at >= since)
+    ).one()
+    return PunctualityResponse(
+        data_mode="live",
+        window_minutes=minutes,
+        snapshots=seen[0],
+        observed_from=seen[1],
+        observed_to=seen[2],
+        on_time_definition=_ON_TIME_DEFINITION,
+        lines=_line_punctuality_buckets(buckets),
+        notice=(
             "Delays estimated by projecting live vehicle positions (Miasto Stołeczne Warszawa, "
             "GTFS-Realtime by Mikołaj Kuranowski) onto the ZTM GTFS timetable of the trip "
             "each vehicle reports. Snapshots are stored at most once a minute while the app "
             "is in use."
-        )
-    else:
-        demo_lines = db.execute(
-            select(Route.short_name, Route.mode)
-            .where(Route.is_demo.is_(True))
-            .order_by(Route.short_name)
-        ).all()
-        rows = [
-            row
-            for row in demo_line_delays(now, [tuple(line) for line in demo_lines])
-            if row.observed_at >= now - timedelta(minutes=minutes)
-        ]
-        notice = (
-            "Demo network: the punctuality history is fictional. Import the Warsaw timetable "
-            "to estimate real delays from live positions."
-        )
+            + (
+                f" Windows over {PUNCTUALITY_FINE_MINUTES} minutes are shown in "
+                f"{bucket_minutes}-minute steps."
+                if bucket_minutes > 1
+                else ""
+            )
+        ),
+    )
+
+
+def _demo_punctuality(db: Session, now: datetime, minutes: int) -> PunctualityResponse:
+    demo_lines = db.execute(
+        select(Route.short_name, Route.mode)
+        .where(Route.is_demo.is_(True))
+        .order_by(Route.short_name)
+    ).all()
+    since = now - timedelta(minutes=minutes)
+    rows = [
+        row
+        for row in demo_line_delays(now, [tuple(line) for line in demo_lines])
+        if row.observed_at >= since
+    ]
     return PunctualityResponse(
-        data_mode="live" if has_schedule else "demo",
+        data_mode="demo",
         window_minutes=minutes,
         snapshots=len({row.observed_at for row in rows}),
         observed_from=rows[0].observed_at if rows else None,
         observed_to=rows[-1].observed_at if rows else None,
-        on_time_definition=(
-            f"On time: between {-EARLY_LIMIT_S // 60} min early and {LATE_LIMIT_S // 60} min late."
-        ),
+        on_time_definition=_ON_TIME_DEFINITION,
         lines=_line_punctuality(rows),
-        notice=notice,
+        notice=(
+            "Demo network: the punctuality history is fictional. Import the Warsaw timetable "
+            "to estimate real delays from live positions."
+        ),
     )
 
 
+_ON_TIME_DEFINITION = (
+    f"On time: between {-EARLY_LIMIT_S // 60} min early and {LATE_LIMIT_S // 60} min late."
+)
+
+
 def _line_punctuality(rows: list[DelaySnapshot]) -> list[LinePunctuality]:
-    by_line: dict[tuple[str, str], list[DelaySnapshot]] = defaultdict(list)
-    for row in rows:
-        by_line[(row.line, row.mode)].append(row)
+    """Per-line summary of single snapshots (one bucket per snapshot)."""
+    return _line_punctuality_buckets(
+        [
+            _Bucket(
+                row.observed_at,
+                row.line,
+                row.mode,
+                1,
+                row.vehicles,
+                row.mean_delay_seconds * row.vehicles,
+                float(row.median_delay_seconds),
+                row.early,
+                row.on_time,
+                row.late,
+            )
+            for row in rows
+        ]
+    )
+
+
+def _line_punctuality_buckets(buckets: list[_Bucket]) -> list[LinePunctuality]:
+    by_line: dict[tuple[str, str], list[_Bucket]] = defaultdict(list)
+    for bucket in buckets:
+        by_line[(bucket.line, bucket.mode)].append(bucket)
     result = []
-    for (line, mode), snapshots in by_line.items():
-        observations = sum(row.vehicles for row in snapshots)
+    for (line, mode), steps in by_line.items():
+        observations = sum(step.vehicles for step in steps)
         if not observations:
             continue
         result.append(
@@ -191,25 +326,26 @@ def _line_punctuality(rows: list[DelaySnapshot]) -> list[LinePunctuality]:
                 mode=mode,
                 observations=observations,
                 mean_delay_minutes=round(
-                    sum(row.mean_delay_seconds * row.vehicles for row in snapshots)
-                    / observations
-                    / 60,
-                    1,
+                    sum(step.weighted_delay_s for step in steps) / observations / 60, 1
                 ),
-                median_delay_minutes=round(
-                    median(row.median_delay_seconds for row in snapshots) / 60, 1
-                ),
-                early_share=round(sum(row.early for row in snapshots) / observations, 3),
-                on_time_share=round(sum(row.on_time for row in snapshots) / observations, 3),
-                late_share=round(sum(row.late for row in snapshots) / observations, 3),
+                median_delay_minutes=round(median(step.median_delay_s for step in steps) / 60, 1),
+                early_share=round(sum(step.early for step in steps) / observations, 3),
+                on_time_share=round(sum(step.on_time for step in steps) / observations, 3),
+                late_share=round(sum(step.late for step in steps) / observations, 3),
                 series=[
                     PunctualityPoint(
-                        observed_at=row.observed_at,
-                        vehicles=row.vehicles,
-                        mean_delay_minutes=round(row.mean_delay_seconds / 60, 1),
-                        on_time_share=round(row.on_time / row.vehicles, 3) if row.vehicles else 0,
+                        observed_at=step.observed_at,
+                        vehicles=round(step.vehicles / step.snapshots),
+                        mean_delay_minutes=(
+                            round(step.weighted_delay_s / step.vehicles / 60, 1)
+                            if step.vehicles
+                            else 0.0
+                        ),
+                        on_time_share=(
+                            round(step.on_time / step.vehicles, 3) if step.vehicles else 0
+                        ),
                     )
-                    for row in snapshots
+                    for step in steps
                 ],
             )
         )

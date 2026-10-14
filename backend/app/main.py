@@ -3,12 +3,15 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from .api import router
 from .api_live import router as live_router
-from .database import SessionLocal, wait_for_database
+from .database import AdminSession, admin_engine, wait_for_database
 from .demo_data import seed_demo_network
 from .migrate import migrate
 from .model_card import router as model_router
@@ -16,9 +19,9 @@ from .model_card import router as model_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    wait_for_database()
+    wait_for_database(admin_engine)
     migrate()
-    with SessionLocal() as session:
+    with AdminSession() as session:
         seed_demo_network(session)
     yield
 
@@ -43,3 +46,14 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(live_router)
 app.include_router(model_router)
+
+
+@app.exception_handler(PoolTimeoutError)
+@app.exception_handler(OperationalError)
+def database_busy(_: Request, error: Exception) -> JSONResponse:
+    """A cancelled slow statement or an exhausted pool is "busy, retry", not a server fault."""
+    return JSONResponse(
+        {"detail": "The database is busy, try again in a few seconds."},
+        status_code=503,
+        headers={"Retry-After": "5"},
+    )
