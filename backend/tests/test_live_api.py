@@ -646,3 +646,31 @@ def test_a_demo_installation_still_shows_the_labelled_demo_vehicles(
 
     assert body["data_mode"] == "demo" and body["feed_outage"] is False
     assert len(body["features"]) == 1
+
+
+def test_concurrent_first_requests_build_the_network_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    api._network_cache.clear()
+    builds: list[int] = []
+    original = api._network_collection
+
+    def slow(*args: object):
+        builds.append(1)
+        threading.Event().wait(0.3)
+        return original(*args)
+
+    monkeypatch.setattr(api, "_network_collection", slow)
+    statuses: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: statuses.append(client.get("/api/network").status_code))
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert statuses == [200] * 4 and len(builds) == 1

@@ -56,6 +56,7 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
 
 
 _network_cache: dict[object, tuple[bytes, bytes]] = {}
+_network_lock = threading.Lock()
 
 
 @router.get("/network", response_model=FeatureCollection, tags=["network"])
@@ -63,11 +64,16 @@ def network(request: Request, db: Session = Depends(get_db)) -> Response:
     """The whole network as GeoJSON, serialised and gzipped once per imported timetable."""
     has_schedule = db.scalar(select(Route.id).where(Route.is_demo.is_(False)).limit(1)) is not None
     key = (has_schedule, _network_version(db, not has_schedule))
-    if key not in _network_cache:
-        body = _network_collection(db, has_schedule).model_dump_json().encode()
-        _network_cache.clear()
-        _network_cache[key] = (body, gzip.compress(body, compresslevel=6))
-    body, compressed = _network_cache[key]
+    entry = _network_cache.get(key)
+    if entry is None:
+        with _network_lock:  # one request builds it, concurrent ones wait for the same result
+            entry = _network_cache.get(key)
+            if entry is None:
+                body = _network_collection(db, has_schedule).model_dump_json().encode()
+                entry = (body, gzip.compress(body, compresslevel=6))
+                _network_cache.clear()
+                _network_cache[key] = entry
+    body, compressed = entry
     headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache"}
     if "gzip" in request.headers.get("accept-encoding", ""):
         headers["Content-Encoding"] = "gzip"
