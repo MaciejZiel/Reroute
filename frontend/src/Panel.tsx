@@ -94,10 +94,15 @@ function Header({ kicker, title, subtitle, onBack, backLabel, onClear, t, chip }
   );
 }
 
-function ErrorNote({ error, fallback, t }: { error: Error | null; fallback: string; t: T }) {
+function ErrorNote({ error, fallback, t, onRetry }: { error: Error | null; fallback: string; t: T; onRetry?: () => void }) {
   if (!error) return null;
   const status = (error as { status?: number }).status;
-  return <p className="form-error" role="alert">{status === 503 ? t("reimport") : fallback}</p>;
+  return (
+    <div className="form-error" role="alert">
+      <p>{status === 503 ? t("reimport") : fallback}</p>
+      {onRetry && <button type="button" className="retry-button retry-inline" onClick={onRetry}>{t("retry")}</button>}
+    </div>
+  );
 }
 
 function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps) {
@@ -109,7 +114,7 @@ function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps)
     <>
       <Header kicker={t("stopKicker")} title={data?.stop.name ?? focus.stopName ?? ""} onClear={onClear} t={t}
         subtitle={data ? `${data.platforms.length} ${t("platforms")} · ${data.lines.length} ${t("activeLines")}` : undefined}/>
-      <ErrorNote error={stop.error} fallback={t("stopError")} t={t}/>
+      <ErrorNote error={stop.error} fallback={t("stopError")} t={t} onRetry={stop.retry}/>
       {stop.loading && !data && <div className="skeleton-list" aria-hidden="true"><i/><i/><i/></div>}
       {data && data.data_mode === "demo" && <p className="panel-note">{t("demoNoTimetable")}</p>}
       {data && <>
@@ -159,7 +164,7 @@ function LineView(props: PanelProps) {
           <button type="button" aria-pressed={lineScope === "stop"} onClick={() => onScope("stop")}>{t("scopeStop")}<small>{headingCount}</small></button>
         </div>
       )}
-      <ErrorNote error={line.error} fallback={t("lineError")} t={t}/>
+      <ErrorNote error={line.error} fallback={t("lineError")} t={t} onRetry={line.retry}/>
       {detail && detail.alerts.length > 0 && (
         <section className="alert-box" aria-label={t("alerts")}>
           <span className="section-kicker">{t("alerts")}</span>
@@ -194,7 +199,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
         subtitle={data?.label ? `#${data.label}` : undefined} onClear={onClear} t={t}
         onBack={onBack} backLabel={`${t("backToLine")} ${focus.lineLabel ?? ""}`}
         chip={data ? <LineChip label={data.line} mode={data.mode}/> : undefined}/>
-      <ErrorNote error={vehicle.error} fallback={t("lineError")} t={t}/>
+      <ErrorNote error={vehicle.error} fallback={t("lineError")} t={t} onRetry={vehicle.retry}/>
       {vehicle.loading && !data && <div className="skeleton-list" aria-hidden="true"><i/><i/></div>}
       {data && <>
         <div className="vehicle-delay"><span className="section-kicker">{t("delayVsTimetable")}</span><DelayBadge seconds={data.delay_seconds} t={t} big/>

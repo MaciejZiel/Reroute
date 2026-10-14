@@ -1,9 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-export interface Polled<T> {
+interface PolledState<T> {
   data: T | null;
   error: Error | null;
   loading: boolean;
+}
+
+export interface Polled<T> extends PolledState<T> {
+  /** Run the load again now, for a retry button next to an error. */
+  retry: () => void;
 }
 
 /**
@@ -17,7 +22,7 @@ export function usePolled<T>(
   load: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
 ): Polled<T> {
-  const [state, setState] = useState<Polled<T>>({ data: null, error: null, loading: key !== null });
+  const [state, setState] = useState<PolledState<T>>({ data: null, error: null, loading: key !== null });
   const loadRef = useRef(load);
   loadRef.current = load;
   const runRef = useRef<() => void>(() => undefined);
@@ -49,5 +54,6 @@ export function usePolled<T>(
     return () => window.clearInterval(timer);
   }, [key, intervalMs]);
 
-  return state;
+  const retry = useCallback(() => { runRef.current(); }, []);
+  return { ...state, retry };
 }
