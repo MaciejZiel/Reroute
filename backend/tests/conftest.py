@@ -42,7 +42,7 @@ def db(pg_engine: Engine) -> Iterator[Session]:
         session.execute(
             text(
                 f"TRUNCATE {tables}, routes, stops, vehicle_observations, stop_arrival_events, "
-                "vehicle_latest, collector_state, delay_snapshots CASCADE"
+                "vehicle_latest, collector_state, delay_snapshots, vehicle_positions CASCADE"
             )
         )
         session.commit()

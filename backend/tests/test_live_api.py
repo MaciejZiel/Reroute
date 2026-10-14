@@ -11,7 +11,7 @@ from shapely.geometry import LineString, Point
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from app import api, live, predict
+from app import api, api_live, live, predict
 from app.collector import store
 from app.database import get_db
 from app.main import app
@@ -23,6 +23,7 @@ from app.models import (
     Stop,
     StopPattern,
     TripSchedule,
+    VehiclePosition,
 )
 from app.stops import fold, natural_key
 from app.timeutil import service_instant, service_seconds
@@ -132,6 +133,7 @@ def client(network: Session, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch)
     from app import stops
 
     stops._cache.clear()
+    monkeypatch.setattr(api_live, "_vehicles_cache", None)
     yield TestClient(app)
     app.dependency_overrides.clear()
     stops._cache.clear()
@@ -579,3 +581,68 @@ def test_only_the_departures_that_can_be_shown_are_predicted(
     # the station has 7 trips in the next six hours; with per_line=1 the line of 6 trips is cut
     # to 1 + the slack, and the single trip of the other line stays: 4 + 1 rows are predicted
     assert sum(seen) == 5
+
+
+def test_vehicle_body_is_built_once_per_poll(
+    client: TestClient, pg_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    store.upsert_latest(pg_engine, [_vehicle("t", 100, 1, now)])
+    first = client.get("/api/vehicles")
+    built: list[int] = []
+    original = api_live._vehicle_collection
+    monkeypatch.setattr(api_live, "_vehicle_collection", lambda *a: built.append(1) or original(*a))
+
+    again = client.get("/api/vehicles")
+
+    assert again.content == first.content and not built  # same poll: the stored body is reused
+    store.upsert_latest(pg_engine, [_vehicle("t", 100, 1, now + timedelta(seconds=20))])
+    client.get("/api/vehicles")
+    assert built  # a new poll builds a new body
+
+
+def test_a_feed_outage_on_the_real_network_says_so_instead_of_showing_demo_vehicles(
+    client: TestClient, network: Session
+) -> None:
+    network.add(
+        VehiclePosition(
+            vehicle_number="D1",
+            line="9",
+            mode="tram",
+            latitude=52.2,
+            longitude=21.0,
+            location=from_shape(Point(21.0, 52.2), srid=4326),
+            observed_at=datetime.now(UTC),
+            is_demo=True,
+        )
+    )
+    network.commit()
+
+    body = client.get("/api/vehicles").json()
+
+    assert body["data_mode"] == "live" and body["feed_outage"] is True
+    assert body["features"] == [] and "unavailable" in body["notice"]
+
+
+def test_a_demo_installation_still_shows_the_labelled_demo_vehicles(
+    client: TestClient, network: Session
+) -> None:
+    network.execute(Route.__table__.update().values(is_demo=True))
+    network.add(
+        VehiclePosition(
+            vehicle_number="D1",
+            line="9",
+            mode="tram",
+            latitude=52.2,
+            longitude=21.0,
+            location=from_shape(Point(21.0, 52.2), srid=4326),
+            observed_at=datetime.now(UTC),
+            is_demo=True,
+        )
+    )
+    network.commit()
+
+    body = client.get("/api/vehicles").json()
+
+    assert body["data_mode"] == "demo" and body["feed_outage"] is False
+    assert len(body["features"]) == 1

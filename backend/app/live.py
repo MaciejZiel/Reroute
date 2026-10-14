@@ -157,9 +157,20 @@ def fallback_error() -> str | None:
     return _fallback_error
 
 
-def snapshot(db: Session, line: str | None = None) -> LiveSnapshot:
-    """Current vehicles (optionally of one line)."""
-    collector = ensure_fresh(db)
+def newest_observed_at(db: Session) -> datetime | None:
+    """Time of the newest recent position (after making sure the table is being filled)."""
+    ensure_fresh(db)
+    return db.scalar(
+        select(func.max(tables.vehicle_latest.c.observed_at)).where(
+            tables.vehicle_latest.c.observed_at > datetime.now(UTC) - timedelta(minutes=5)
+        )
+    )
+
+
+def snapshot(db: Session, line: str | None = None, refresh: bool = True) -> LiveSnapshot:
+    """Current vehicles (optionally of one line). ``refresh=False``: the caller just called
+    ``newest_observed_at``, so the freshness check is not repeated."""
+    collector = ensure_fresh(db) if refresh else None
     vehicles = tuple(_to_vehicle(row) for row in _rows(db, line))
     if not vehicles:
         return LiveSnapshot((), None, "none")
