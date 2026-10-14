@@ -94,7 +94,7 @@ def evaluate_predictions(
 ) -> dict:
     """Score a model given as a function returning (median, lower, upper) per sample. Trained
     heads and a model file read back by the server's evaluator both go through here."""
-    boot = ClusterBootstrap(test.trip)
+    boot = ClusterBootstrap(test.clusters())
     historical = baselines.HistoricalMedian(train)
     damped = baselines.DampedPersistence(train)
     candidates: dict[str, Callable[[Samples], np.ndarray]] = {
@@ -151,7 +151,7 @@ def evaluate_predictions(
         "promoted": bool(promoted),
         "rule": (
             f"serve the model by default only if its MAE is at least {MIN_RELATIVE_GAIN:.0%} "
-            "below the best baseline's on the test fold and the 95% trip-bootstrap interval of "
+            "below the best baseline's on the test fold and the 95% cluster-bootstrap interval of "
             "that gain stays above zero"
         ),
     }

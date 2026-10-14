@@ -218,6 +218,39 @@ def test_a_rebuild_never_changes_the_serving_decision(tmp_path: Path) -> None:
     assert card["gain_vs_best_baseline"] == {"value": 1}
 
 
+def test_the_note_says_whether_the_folds_were_the_same_ones(tmp_path: Path) -> None:
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["card"]["data"]["last_event_epoch"] = BASE + 10_000_000
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    card, _ = credibility.add_credibility(model_path, _write_events(tmp_path), None, tmp_path / "d")
+    assert card["credibility_added"]["note"].endswith("on folds identical to the training run's")
+
+    document["card"]["data"] = {"last_event_epoch": BASE + 10_000_000, "arrivals": 5}
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    card, problems = credibility.add_credibility(
+        model_path, _write_events(tmp_path), None, tmp_path / "d", allow_mismatch=True
+    )
+    note = card["credibility_added"]["note"]
+    assert problems and "rebuilt" in note and "identical" not in note
+    assert card["credibility_added"]["rebuild_differences"] == problems
+
+
+def test_the_pull_time_recorded_by_training_is_used_when_none_is_given(tmp_path: Path) -> None:
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["card"]["data"]["last_event_epoch"] = BASE + 10_000_000
+    document["card"]["data"]["known_until_epoch"] = BASE + 600  # early: keeps only a few arrivals
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    events = tmp_path / "events.csv"
+    _write_events(tmp_path)
+    parts_recorded, _ = credibility.rebuild(DelayModel.load(model_path), events, None, None)
+    del document["card"]["data"]["known_until_epoch"]
+    model_path.write_text(json.dumps(document), encoding="utf-8")
+    parts_all, _ = credibility.rebuild(DelayModel.load(model_path), events, None, None)
+    assert sum(len(p) for p in parts_recorded.values()) < sum(len(p) for p in parts_all.values())
+
+
 def _iso(epoch: float) -> str:
     from datetime import UTC, datetime
 
@@ -244,3 +277,44 @@ def _write_events(tmp_path: Path) -> Path:
                 ]
             )
     return path
+
+
+def test_clusters_are_one_line_in_one_quarter_of_an_hour(parts) -> None:
+    test = parts["test"]
+    keys = test.clusters()
+    assert len(keys) == len(test)
+    for key, line, moment in zip(keys[:50], test.line[:50], test.t0[:50], strict=True):
+        assert key == f"{line}|{int(moment // dataset.CLUSTER_SECONDS)}"
+    # trips of one line that run at the same time end up in one cluster, so there are fewer
+    # clusters than trips: the bootstrap does not treat them as independent
+    assert len(np.unique(keys)) < len(np.unique(test.trip)) * len(set(test.line))
+    assert len(np.unique(keys)) > 1
+
+
+def test_a_resample_without_any_sample_of_the_bin_is_left_out_not_counted_as_zero() -> None:
+    from ml.metrics import ClusterBootstrap
+
+    clusters = np.array([f"c{i // 2}" for i in range(100)])  # 50 clusters of two samples
+    boot = ClusterBootstrap(clusters, resamples=500)
+    inside = np.ones(100)
+    one_cluster = np.zeros(100, dtype=bool)
+    one_cluster[:2] = True  # about a third of the resamples do not contain it at all
+    result = boot.mean(inside, one_cluster)
+    assert result.value == 1.0 and result.low == 1.0 and result.high == 1.0
+    nothing = boot.mean(inside, np.zeros(100, dtype=bool))
+    assert np.isnan([nothing.value, nothing.low, nothing.high]).all()  # undefined, not 0
+
+
+def test_a_bin_needs_enough_trips_as_well_as_enough_predictions(parts, monkeypatch) -> None:
+    test = parts["test"]
+    y = test.y_delay
+    monkeypatch.setattr(calibration, "MIN_BIN", 1)
+    thin = calibration.interval_report(test, y - 5, y + 5, 0.8, evaluate.horizon_masks(test))
+    trips = {row["trips"] for row in thin["by_hour"].values()}
+    assert trips and all(
+        row["enough_data"] == (row["trips"] >= calibration.MIN_TRIPS)
+        for row in thin["by_hour"].values()
+    )
+    monkeypatch.setattr(calibration, "MIN_TRIPS", max(trips) + 1)
+    none = calibration.interval_report(test, y - 5, y + 5, 0.8, evaluate.horizon_masks(test))
+    assert not any(row["enough_data"] for row in none["by_hour"].values())

@@ -23,8 +23,8 @@ describe("pausedNoteKey", () => {
     expect(pausedNoteKey([{ model_status: "paused", pause_reason: "vehicle_report", why: null }])).toBe("pausedVehicleReport");
     expect(pausedNoteKey([{ model_status: "paused", pause_reason: "last_stop" }])).toBe("pausedLastStop");
     expect(pausedNoteKey([{ model_status: "paused", pause_reason: "no_vehicle" }])).toBeNull();
-    expect(pausedNoteKey([{ model_status: "no_inputs", why: null }])).toBe("noInputsNote");
-    expect(pausedNoteKey([{ model_status: "no_inputs", why: { summary: "x" } }])).toBeNull();
+    expect(pausedNoteKey([{ model_status: "passed", why: null }])).toBe("passedNote");
+    expect(pausedNoteKey([{ model_status: "passed", why: { summary: "x" } }])).toBeNull();
     expect(pausedNoteKey([{ model_status: "model", why: { summary: "x" } }])).toBeNull();
     expect(pausedNoteKey([{ model_status: "held", why: { summary: "x" } }])).toBeNull();
     expect(pausedNoteKey([])).toBeNull();

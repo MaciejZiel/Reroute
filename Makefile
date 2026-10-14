@@ -29,7 +29,9 @@ ml-fixtures:
 	cd backend && python scripts/make_ml_fixtures.py
 
 # Add the ridge comparison and the interval calibration to the stored model's card, without
-# retraining (run make ml-pull first; KNOWN_UNTIL is the UTC time the training data was pulled).
+# retraining (run make ml-pull first). The folds must be the training run's exactly: models
+# trained from now on record the pull time in their card and need nothing more; for an older card
+# pass KNOWN_UNTIL, the UTC time (ISO 8601) the training data was pulled.
 ml-credibility:
 	cd backend && python -m ml credibility --events ../$(DATA)/arrival_events.csv \
 		--observations ../$(DATA)/observations.csv $(if $(KNOWN_UNTIL),--known-until $(KNOWN_UNTIL))

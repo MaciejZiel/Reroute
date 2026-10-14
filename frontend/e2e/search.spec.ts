@@ -77,9 +77,9 @@ for (const language of LANGUAGES) {
     await expect(page.locator(".why-note").filter({ hasText: "Rondo ONZ" })).toHaveCount(0);
   });
 
-  test(`a baseline answer without model inputs is labelled with a calm note (${language})`, async ({ page }) => {
+  test(`a baseline answer for a stop the vehicle has already reached is labelled with a calm note (${language})`, async ({ page }) => {
     await page.addInitScript((lang) => localStorage.setItem("reroute-language", lang), language);
-    await mockApi(page, () => vehicleDetail({ model_status: "no_inputs", why: null }));
+    await mockApi(page, () => vehicleDetail({ model_status: "passed", why: null }));
     await page.goto("/");
     await openVehicle(page);
 

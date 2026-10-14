@@ -3,7 +3,8 @@
 Coverage is the share of arrivals whose delay lies inside [lower, upper]. A calibrated 80%
 interval covers about 80% everywhere; an interval that is right on average can still be too
 narrow for far stops or for one hour of the evening, which is what the splits here show.
-Every share comes with a bootstrap interval that resamples whole trips.
+Every share comes with a bootstrap interval that resamples clusters of one line and one
+15-minute block (see ``Samples.clusters``).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from .dataset import Samples
 from .metrics import ClusterBootstrap
 
 MIN_BIN = 200  # a bin with fewer predictions than this is listed but not trusted
+MIN_TRIPS = 30  # ... and so is one with fewer trips: its predictions are not independent draws
 
 
 def local_hours(moments: np.ndarray) -> np.ndarray:
@@ -29,18 +31,24 @@ def local_hours(moments: np.ndarray) -> np.ndarray:
 
 
 def _bin(
-    boot: ClusterBootstrap, y: np.ndarray, lower: np.ndarray, upper: np.ndarray, mask: np.ndarray
+    boot: ClusterBootstrap,
+    samples: Samples,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    mask: np.ndarray,
 ) -> dict:
+    y = samples.y_delay
     inside = ((y >= lower) & (y <= upper)).astype(float)
     n = int(mask.sum())
+    trips = int(len(np.unique(samples.trip[mask])))
     return {
         "n": n,
-        "trips": int(len(np.unique(boot.inverse[mask]))),
+        "trips": trips,
         "coverage": boot.mean(inside, mask),
         "below_share": boot.mean((y < lower).astype(float), mask).value,
         "above_share": boot.mean((y > upper).astype(float), mask).value,
         "mean_width_s": float((upper - lower)[mask].mean()),
-        "enough_data": n >= MIN_BIN,
+        "enough_data": n >= MIN_BIN and trips >= MIN_TRIPS,
     }
 
 
@@ -57,18 +65,17 @@ def interval_report(
     on both sides)."""
     if len(samples) == 0:
         return {"nominal": nominal, "n": 0, "by_horizon": {}, "by_hour": {}}
-    boot = ClusterBootstrap(samples.trip)
-    y = samples.y_delay
+    boot = ClusterBootstrap(samples.clusters())
     everything = np.ones(len(samples), dtype=bool)
     by_horizon = {}
     for label, mask in horizons:
         if mask.any():
-            by_horizon[label] = _bin(boot, y, lower, upper, mask)
+            by_horizon[label] = _bin(boot, samples, lower, upper, mask)
     hours = local_hours(samples.t0)
     by_hour = {}
     for hour in np.unique(hours):
-        by_hour[f"{int(hour):02d}:00"] = _bin(boot, y, lower, upper, hours == hour)
-    overall = _bin(boot, y, lower, upper, everything)
+        by_hour[f"{int(hour):02d}:00"] = _bin(boot, samples, lower, upper, hours == hour)
+    overall = _bin(boot, samples, lower, upper, everything)
     return {"nominal": nominal, **overall, "by_horizon": by_horizon, "by_hour": by_hour}
 
 

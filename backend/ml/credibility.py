@@ -56,6 +56,8 @@ def rebuild(
 ) -> tuple[dict[str, dataset.Samples], list[str]]:
     """The four folds of the original training run, and the checks that they are the same."""
     card = model.card
+    if known_until is None:  # models trained from now on record what was known at the pull
+        known_until = card["data"].get("known_until_epoch")
     events = [
         e
         for e in dataset.load_events(events_path)
@@ -95,7 +97,9 @@ def add_credibility(
         raise SystemExit(
             "the rebuilt data does not match what the model was trained on:\n  "
             + "\n  ".join(problems)
-            + "\nPass --known-until (the time the data was pulled) or --allow-mismatch."
+            + "\nPass --known-until (the UTC time the training data was pulled; the cards of newer "
+            "models record it) or --allow-mismatch, which labels the refreshed blocks as coming "
+            "from rebuilt folds."
         )
     ridge = linear.fit(parts["train"], parts["early_stop"], model.feature_names)
     predict = model_quantiles(model)
@@ -127,7 +131,13 @@ def add_credibility(
     card["linear"] = report.linear_summary(ridge)
     card["credibility_added"] = {
         "note": "calibration and the ridge comparison were computed from the stored model, "
-        "without retraining, on the same folds",
+        "without retraining, "
+        + (
+            "on folds identical to the training run's"
+            if not problems
+            else "on folds rebuilt from the recorded data, which differ from the training run's "
+            "(see rebuild_differences); the tree scores are recomputed on the rebuilt folds"
+        ),
         "tree_mae_before": previous_mae,
         "tree_mae_after": plain["scores"][evaluate.GBT]["mae"]["value"],
         "rebuild_differences": problems,

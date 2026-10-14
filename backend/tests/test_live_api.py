@@ -103,10 +103,21 @@ def network(db: Session) -> Session:
         start = (hour * 60 + minute) * 60
         _trip(db, f"2026-10-13:9:X:1:{hour}{minute:02d}", "9", 0, DAY, start, "Koniec")
     _trip(db, "2026-10-13:175:X:1:1205", "175", 1, DAY, 12 * 3600 + 300, "Koniec")
-    # A trip of the previous service day that runs past midnight (24:10 = 00:10 on the 14th).
-    _trip(db, "2026-10-13:9:X:1:2410", "9", 0, DAY, 24 * 3600 + 600, "Koniec")
     db.commit()
     return db
+
+
+@pytest.fixture
+def after_midnight_trip(network: Session) -> str:
+    """A trip of the 13th that runs past midnight (24:10 = 00:10 on the 14th).
+
+    Only the test that asks for it at a fixed moment gets it: a trip pinned to a calendar date in
+    the shared fixture would show up in every test that runs close to that date's midnight.
+    """
+    trip_id = "2026-10-13:9:X:1:2410"
+    _trip(network, trip_id, "9", 0, DAY, 24 * 3600 + 600, "Koniec")
+    network.commit()
+    return trip_id
 
 
 @pytest.fixture
@@ -192,12 +203,14 @@ def test_platform_scope_limits_the_lines_to_one_platform(client: TestClient) -> 
     assert len(body["platforms"]) == 1
 
 
-def test_trips_after_midnight_belong_to_the_service_day_before(client: TestClient) -> None:
+def test_trips_after_midnight_belong_to_the_service_day_before(
+    client: TestClient, after_midnight_trip: str
+) -> None:
     # At 00:05 on the 14th the 24:10 trip of the 13th (00:10 local) is the next tram 9.
     body = _departures(client, "100101", _local(date(2026, 10, 14), 0, 5))
 
     departures = next(line for line in body["lines"] if line["line"] == "9")["departures"]
-    assert departures[0]["trip_id"] == "2026-10-13:9:X:1:2410"
+    assert departures[0]["trip_id"] == after_midnight_trip
     assert departures[0]["scheduled_at"] == "2026-10-13T22:10:00Z"  # 00:10 CEST
     assert departures[0]["minutes"] == 5
 

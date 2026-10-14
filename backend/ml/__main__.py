@@ -59,6 +59,12 @@ def run_train(args: argparse.Namespace) -> int:
         heads, parts["train"], parts["calibration"], test, train.NOMINAL, ridge
     )
     first, last = min(e.actual_s for e in events), max(e.actual_s for e in events)
+    # What was known when the data was pulled: a later rebuild of the folds (``make
+    # ml-credibility``) cuts events and vehicle reports at this moment to get the same samples.
+    known = [max(e.known_s for e in events)]
+    if observations is not None and observations.newest is not None:
+        known.append(observations.newest)
+    known_until = max(known)
     card = report._plain(
         {
             "data": {
@@ -70,6 +76,7 @@ def run_train(args: argparse.Namespace) -> int:
                 "last_arrival": iso(last),
                 "span_hours": round((last - first) / 3600, 2),
                 "last_event_epoch": last,
+                "known_until_epoch": known_until,
                 "service_dates": sorted({e.trip_id[:10] for e in events}),
             },
             "folds": {

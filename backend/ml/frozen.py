@@ -54,7 +54,7 @@ def evaluate_frozen(
     served = np.array(
         [model.in_range(dict(zip(FEATURE_NAMES, row.tolist(), strict=True))) for row in later.X]
     )
-    boot = ClusterBootstrap(later.trip)
+    boot = ClusterBootstrap(later.clusters())
     model_err, base_err = np.abs(median - y), np.abs(later.base_delay - y)
     gain = boot.relative_gain(base_err, model_err)
     by_horizon = {}

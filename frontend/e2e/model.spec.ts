@@ -20,6 +20,10 @@ for (const language of LANGUAGES) {
       await expect(panel).toContainText(language === "pl" ? "jednego wieczoru" : "one evening");
       await expect(panel).toContainText(language === "pl" ? "40,6 s" : "40.6 s");
       await expect(panel).toContainText(language === "pl" ? "79,9%" : "79.9%");
+      // "Trained on" is the training window only; the unseen minutes are listed on their own line
+      const trainedOn = panel.locator("dd").filter({ hasText: "16:26" });
+      await expect(trainedOn).toContainText("16:26–21:14");
+      await expect(trainedOn).not.toContainText("22:08");
       // the window the model was tuned on is not shown as evidence
       await expect(panel).not.toContainText(language === "pl" ? "81,0%" : "81.0%");
       // nothing overflows sideways
