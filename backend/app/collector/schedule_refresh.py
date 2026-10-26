@@ -4,8 +4,10 @@ Realtime trip ids only match the timetable they were published with. The Warsaw
 feed is republished every day and its trip ids change, so a timetable imported
 once stops matching after a few days and every vehicle loses its delay. The
 collector checks the age of the imported timetable and, when it is older than
-``refresh_hours``, runs ``python -m app.import_gtfs --force-download`` in a child
-process. Polling goes on meanwhile: the import replaces the timetable in one
+``refresh_hours``, or when vehicles stop matching it (a new upstream timetable)
+and it is at least an hour old, runs ``python -m app.import_gtfs --force-download``
+in a child process; the import itself takes a database lock, so a second one
+exits at once. Polling goes on meanwhile: the import replaces the timetable in one
 transaction and the pipeline reloads it when the feed version changes.
 """
 
@@ -22,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 IMPORT_COMMAND = (sys.executable, "-m", "app.import_gtfs", "--force-download")
 RETRY_AFTER = timedelta(hours=1)
+# A timetable no vehicle matches is replaced once it is at least this old.
+UNMATCHED_MIN_AGE = timedelta(hours=1)
 
 
 class Process(Protocol):
@@ -56,8 +60,11 @@ class ScheduleRefresher:
             downloaded = downloaded.replace(tzinfo=UTC)
         return now - downloaded
 
-    def tick(self, now: datetime) -> bool:
-        """Check the running import and start one if due; True when one was started."""
+    def tick(self, now: datetime, unmatched: bool = False) -> bool:
+        """Check the running import and start one if due; True when one was started.
+
+        ``unmatched`` says the vehicles have stopped matching the timetable.
+        """
         if not self.enabled:
             return False
         if self.process is not None:
@@ -74,7 +81,9 @@ class ScheduleRefresher:
         if self.not_before is not None and now < self.not_before:
             return False
         age = self.age(now)
-        if age is None or age < self.refresh_after:
+        if age is None:
+            return False
+        if age < self.refresh_after and not (unmatched and age >= UNMATCHED_MIN_AGE):
             return False
         logger.info("timetable is %.1f h old, importing a fresh one", age.total_seconds() / 3600)
         try:

@@ -24,6 +24,11 @@ from .schedule_refresh import ScheduleRefresher
 
 logger = logging.getLogger(__name__)
 FEED_ID = "warsaw-static-gtfs"
+# Below this share of matched vehicles, for this many polls in a row with at
+# least this many vehicles, the timetable no longer fits the realtime feed.
+UNMATCHED_SHARE = 0.05
+UNMATCHED_POLLS = 15
+UNMATCHED_MIN_VEHICLES = 50
 
 
 def to_observations(feed: Feed) -> list[Observation]:
@@ -189,6 +194,7 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
         settings.schedule_refresh_hours, lambda: schedule_downloaded_at(engine)
     )
     last_alerts = last_housekeeping = last_rollup = last_schedule_check = 0.0
+    unmatched_polls = 0  # polls in a row in which almost no vehicle matched a trip
     failures = 0
     with GtfsRtClient() as client:
         while not stop.is_set():
@@ -210,6 +216,9 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
                 metrics.count("duplicates_skipped_total", result.skipped_duplicates)
                 metrics.gauge("vehicles_in_feed", len(feed.vehicles))
                 metrics.gauge("matched_share", matched / max(len(result.observations), 1))
+                if len(result.observations) >= UNMATCHED_MIN_VEHICLES:
+                    unmatched = matched < UNMATCHED_SHARE * len(result.observations)
+                    unmatched_polls = unmatched_polls + 1 if unmatched else 0
                 if feed.timestamp:
                     metrics.gauge(
                         "feed_age_seconds", (datetime.now(UTC) - feed.timestamp).total_seconds()
@@ -236,7 +245,7 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
                     write_delay_rollup(engine, datetime.now(UTC))
                 if not once and now - last_schedule_check >= 600:
                     last_schedule_check = now
-                    refresher.tick(datetime.now(UTC))
+                    refresher.tick(datetime.now(UTC), unmatched_polls >= UNMATCHED_POLLS)
                     age = refresher.age(datetime.now(UTC))
                     if age is not None:
                         metrics.gauge("schedule_age_hours", round(age.total_seconds() / 3600, 2))

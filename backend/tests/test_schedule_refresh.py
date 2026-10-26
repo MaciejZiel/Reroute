@@ -99,3 +99,12 @@ def test_the_refresh_interval_comes_from_the_environment(monkeypatch) -> None:
     assert Settings.from_env().schedule_refresh_hours == 6.0
     monkeypatch.setenv("SCHEDULE_REFRESH_HOURS", "-1")
     assert Settings.from_env().schedule_refresh_hours == 0.0
+
+
+def test_vehicles_that_stop_matching_trigger_an_early_import() -> None:
+    refresher, spawn = _refresher([NOW - timedelta(minutes=30)])
+    assert not refresher.tick(NOW, unmatched=True)  # too fresh to blame
+    refresher.downloaded_at = lambda: NOW - timedelta(hours=2)
+    assert not refresher.tick(NOW)  # matching fine: wait for the daily refresh
+    assert refresher.tick(NOW, unmatched=True)
+    assert len(spawn.started) == 1
