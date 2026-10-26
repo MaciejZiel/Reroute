@@ -160,7 +160,9 @@ how many trip ids could not be found).
 Operations:
 
 - Config by environment: `DATABASE_URL`, `GTFS_RT_URL`, `ALERTS_URL`, `POLL_INTERVAL_S`,
-  `OBSERVATION_RETENTION_DAYS`, `ARRIVAL_RETENTION_DAYS`, `RAW_ARCHIVE_DIR`, `STORE_UNMATCHED`, `METRICS_PORT`.
+  `OBSERVATION_RETENTION_DAYS`, `ARRIVAL_RETENTION_DAYS`, `RAW_ARCHIVE_DIR`, `STORE_UNMATCHED`, `METRICS_PORT`,
+  `SCHEDULE_REFRESH_HOURS` (re-import a static timetable older than this, see
+  `app/collector/schedule_refresh.py`; a stale one matches no realtime trip after a few days).
 - Health and metrics on `METRICS_PORT` (default 9100, stdlib `http.server` in a thread, no new
   dependency): `/healthz` returns 200 only if the last successful poll is younger than 3 x interval;
   `/metrics` in Prometheus text format (polls ok/failed, feed age, vehicles, observations

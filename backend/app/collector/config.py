@@ -24,6 +24,8 @@ class Settings:
     raw_archive_dir: str = ""
     store_unmatched: bool = True
     metrics_port: int = 9100
+    # Re-import the static timetable when it is older than this; 0 turns it off.
+    schedule_refresh_hours: float = 24.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,4 +39,5 @@ class Settings:
             raw_archive_dir=os.getenv("RAW_ARCHIVE_DIR", ""),
             store_unmatched=_bool("STORE_UNMATCHED", True),
             metrics_port=int(os.getenv("METRICS_PORT", "9100")),
+            schedule_refresh_hours=max(float(os.getenv("SCHEDULE_REFRESH_HOURS", "24")), 0.0),
         )

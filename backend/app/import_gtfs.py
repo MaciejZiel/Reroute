@@ -5,8 +5,14 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import text
+
 from .data_sources import DEFAULT_GTFS_URL, download_schedule, import_schedule, parse_schedule
-from .database import AdminSession
+from .database import AdminSession, admin_engine
+
+# One timetable import at a time: a second one (another collector after a
+# restart, or a manual run) exits instead of downloading and parsing again.
+IMPORT_LOCK_KEY = 7_201_026
 
 
 def main() -> None:
@@ -17,9 +23,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    archive_path = args.file or download_schedule(
+    # Autocommit: the session-level lock outlives no transaction, so this
+    # connection is never left idle in a transaction while the import runs.
+    with admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as lock:
+        if not lock.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}):
+            print("Another timetable import is running; nothing to do.")
+            return
+        try:
+            _import(args.file, args.force_download)
+        finally:
+            lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
+
+
+def _import(file: Path | None, force_download: bool) -> None:
+    archive_path = file or download_schedule(
         os.getenv("GTFS_URL", DEFAULT_GTFS_URL),
-        force=args.force_download,
+        force=force_download,
     )
     schedule = parse_schedule(archive_path, downloaded_at=datetime.now(UTC))
     if not schedule.routes or not schedule.stops:
