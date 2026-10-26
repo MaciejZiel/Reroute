@@ -20,6 +20,7 @@ from . import store, tables
 from .config import Settings
 from .derive import MatchStatus, Observation, PollResult, VehicleState, derive_poll, project
 from .metrics import Metrics, serve
+from .schedule_refresh import ScheduleRefresher
 
 logger = logging.getLogger(__name__)
 FEED_ID = "warsaw-static-gtfs"
@@ -123,6 +124,12 @@ def route_from_vehicle_id_str(vehicle_id: str) -> str | None:
     return parts[1] if len(parts) == 3 and parts[0] == "V" and parts[1] else None
 
 
+def schedule_downloaded_at(engine: Engine) -> datetime | None:
+    """When the imported static timetable was downloaded, or None without one."""
+    with Session(engine) as session:
+        return session.scalar(select(FeedMetadata.downloaded_at).where(FeedMetadata.id == FEED_ID))
+
+
 def write_delay_rollup(engine: Engine, now: datetime) -> int:
     """One per-line row per minute for the punctuality view, from the latest positions."""
     minute = now.replace(second=0, microsecond=0)
@@ -178,7 +185,10 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
         settings.observation_retention_days,
         settings.arrival_retention_days,
     )
-    last_alerts = last_housekeeping = last_rollup = 0.0
+    refresher = ScheduleRefresher(
+        settings.schedule_refresh_hours, lambda: schedule_downloaded_at(engine)
+    )
+    last_alerts = last_housekeeping = last_rollup = last_schedule_check = 0.0
     failures = 0
     with GtfsRtClient() as client:
         while not stop.is_set():
@@ -224,6 +234,12 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
                 if now - last_rollup >= 60:
                     last_rollup = now
                     write_delay_rollup(engine, datetime.now(UTC))
+                if not once and now - last_schedule_check >= 600:
+                    last_schedule_check = now
+                    refresher.tick(datetime.now(UTC))
+                    age = refresher.age(datetime.now(UTC))
+                    if age is not None:
+                        metrics.gauge("schedule_age_hours", round(age.total_seconds() / 3600, 2))
                 if now - last_housekeeping >= 3600:
                     last_housekeeping = now
                     dropped = store.housekeeping(
