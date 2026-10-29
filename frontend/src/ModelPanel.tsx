@@ -36,7 +36,7 @@ export default function ModelPanel({ language, t, onClose }: { language: Languag
     return () => controller.abort();
   }, []);
 
-  const scores = card ? comparedScores(card.scores) : [];
+  const scores = card ? comparedScores(card.scores, card.best_baseline) : [];
   const peak = Math.max(1, ...scores.map(({ score }) => score.mae_s.value));
   const nominal = card?.interval_nominal ?? 0.8;
   const hours = card ? hoursByWindow(card.calibration_by_hour) : { heldOut: [], tuned: [] };
@@ -64,7 +64,7 @@ export default function ModelPanel({ language, t, onClose }: { language: Languag
           {card.data?.arrivals ? <div><dt>{t("modelRecorded")}</dt><dd>
             {card.data.arrivals.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelArrivals")}, {card.data.trips?.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelTrips")}
           </dd></div> : null}
-          {card.test_window && <div><dt>{t("modelTestWindow")}</dt><dd>{warsawClock(card.test_window.from, language)}–{warsawClock(card.test_window.to, language)}</dd></div>}
+          {card.test_window && <div><dt>{t("modelTestWindow")}</dt><dd>{warsawDate(card.test_window.from, language)}, {warsawClock(card.test_window.from, language)}–{warsawClock(card.test_window.to, language)}</dd></div>}
         </dl>
 
         {scores.length > 0 && <>

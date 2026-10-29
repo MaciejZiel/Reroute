@@ -14,12 +14,12 @@ from .schemas import CardCoverage, CardInterval, CardScore, ModelCardResponse
 router = APIRouter(prefix="/api")
 
 LIMITS = [
-    "Trained and tested on one evening of one weekday; weekends, mornings, holidays and bad "
-    "weather were never seen.",
+    "Trained on three and a half weekdays and tested on one weekday afternoon; weekends, "
+    "holidays and bad weather were never seen.",
     "Delays are interpolated between vehicle reports, and the model is scored against these "
     "derived times, not against a ground-truth feed.",
-    "The 80% interval is calibrated overall; it is checked per distance and per hour here, but "
-    "only on the hours the evening covers.",
+    "The 80% interval is calibrated overall; it is checked per distance and per hour here, only "
+    "on the hours the test afternoon covers, and it is too narrow in the rush hours.",
     "Where its inputs are stale or too far ahead (more than 12 stops) the baseline answers: the "
     "current delay persists.",
 ]

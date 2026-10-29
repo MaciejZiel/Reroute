@@ -60,7 +60,11 @@ def fit(
     early_stop: Samples,
     calibration: Samples,
     exclude: tuple[str, ...] = SMALL_DATA_EXCLUDED,
+    max_rounds: int = MAX_ROUNDS,
 ) -> Heads:
+    """Fit the three quantile heads, each stopped early on ``early_stop`` or at ``max_rounds``
+    trees. The server walks every tree for each prediction and its explanation, so the cap is
+    also a latency budget."""
     features = [name for name in FEATURE_NAMES if name not in exclude]
     cols = [FEATURE_NAMES.index(name) for name in features]
     alphas = {"lower": (1 - NOMINAL) / 2, "median": 0.5, "upper": 1 - (1 - NOMINAL) / 2}
@@ -71,7 +75,7 @@ def fit(
         booster = lgb.train(
             {**PARAMS, "objective": "quantile", "alpha": alpha},
             data,
-            MAX_ROUNDS,
+            max_rounds,
             valid_sets=[valid],
             callbacks=[lgb.early_stopping(PATIENCE, verbose=False)],
         )

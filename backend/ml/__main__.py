@@ -43,6 +43,13 @@ def positive_seconds(text: str) -> float:
     return value
 
 
+def positive_rounds(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1 tree, not {text}")
+    return value
+
+
 def run_train(args: argparse.Namespace) -> int:
     import numpy as np
 
@@ -63,8 +70,13 @@ def run_train(args: argparse.Namespace) -> int:
     )
     del samples  # the folds hold copies; the full set is gigabytes on a week of data
     exclude = () if args.calendar_features else train.SMALL_DATA_EXCLUDED
+    max_rounds = args.max_rounds or train.MAX_ROUNDS
     heads = train.fit(
-        parts["train"], parts["early_stop"], parts["calibration"], exclude=tuple(exclude)
+        parts["train"],
+        parts["early_stop"],
+        parts["calibration"],
+        exclude=tuple(exclude),
+        max_rounds=max_rounds,
     )
     test = parts["test"]
     ridge = linear.fit(parts["train"], parts["early_stop"], heads.features)
@@ -111,6 +123,7 @@ def run_train(args: argparse.Namespace) -> int:
             "rounds": heads.rounds,
             "linear": report.linear_summary(ridge),
             "params": train.PARAMS,
+            "max_rounds": max_rounds,
             "trained_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **evaluation,
         }
@@ -170,6 +183,13 @@ def main() -> int:
         metavar="SECONDS",
         help="simulate one prediction per this many seconds of a trip's life (default 60); "
         "a larger value gives fewer, less correlated samples and needs less memory",
+    )
+    fit.add_argument(
+        "--max-rounds",
+        type=positive_rounds,
+        metavar="TREES",
+        help="at most this many trees per head (default 800); the server walks every tree for "
+        "each prediction and its reasons, so this bounds its latency",
     )
     frozen = commands.add_parser(
         "evaluate-frozen",

@@ -108,7 +108,7 @@ def test_the_card_of_the_served_model_is_returned_as_recorded(monkeypatch, tmp_p
     assert body["interval_nominal"] == 0.8 and body["interval_mean_width_s"] == 132.0
     assert body["serving_range"]["max_stops_ahead"] == 12
     assert body["features"][0] == "stops_ahead"
-    assert any("one evening" in limit for limit in body["limits"])
+    assert any("weekday" in limit for limit in body["limits"])
 
 
 def test_scores_list_the_comparison_models_but_not_the_degenerate_baselines(
