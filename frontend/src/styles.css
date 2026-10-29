@@ -78,7 +78,7 @@ ul, ol { padding: 0; list-style: none; }
 /* ---------- Floating map UI ---------- */
 .map-overlay { position: absolute; z-index: 4; top: 12px; left: 12px; width: min(344px, calc(100% - 76px)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; pointer-events: none; }
 .map-overlay > * { pointer-events: auto; }
-.search-box, .vehicle-switch, .zoom-hint, .map-legend {
+.search-box, .map-controls, .map-legend {
   background: rgb(21 29 27 / 0.94); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(8px);
 }
 /* Above the cards that follow it: the dropdown overflows onto them and each has its own stacking context (backdrop-filter). */
@@ -96,11 +96,14 @@ ul, ol { padding: 0; list-style: none; }
 .search-results small { color: var(--muted); font-size: 12px; }
 .search-empty { color: var(--muted); cursor: default !important; }
 
-.vehicle-switch { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; text-align: left; }
-.vehicle-switch:hover { border-color: var(--line-strong); }
+/* One card for every map control: the vehicle switch, then a labelled row per group, then the hint. */
+.map-controls { display: grid; gap: 8px; padding: 10px 12px; }
+.vehicle-switch { display: flex; align-items: center; gap: 12px; width: 100%; padding: 2px 0 10px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; }
+.vehicle-switch:hover .switch-track { border-color: var(--text-2); }
+.control-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 8px; }
+.control-label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 .switch-track { flex: none; width: 38px; height: 22px; padding: 2px; border-radius: 99px; background: var(--surface-3); border: 1px solid var(--line-strong); transition: background 0.15s; }
 .switch-track i { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--text-2); transition: transform 0.15s, background 0.15s; }
-.vehicle-switch.on { border-color: var(--bus); }
 .vehicle-switch.on .switch-track { background: var(--bus); border-color: var(--bus); }
 .vehicle-switch.on .switch-track i { transform: translateX(16px); background: #0e1413; }
 .switch-text { display: grid; gap: 1px; min-width: 0; }
@@ -109,16 +112,17 @@ ul, ol { padding: 0; list-style: none; }
 
 .chip-group { display: flex; flex-wrap: wrap; gap: 6px; }
 .mode-chip {
-  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 99px;
-  background: rgb(21 29 27 / 0.94); border: 1px solid var(--line); color: var(--muted); font-size: 13px; font-weight: 500; box-shadow: var(--shadow);
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 99px; white-space: nowrap;
+  background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: 13px; font-weight: 500;
 }
+.mode-chip:hover { color: var(--text-2); border-color: var(--line-strong); }
 .mode-chip i { width: 10px; height: 10px; border-radius: 3px; background: var(--muted); }
 .mode-chip.bus i { background: var(--bus); }
 .mode-chip.tram i { background: var(--tram); }
 .mode-chip[aria-pressed="true"] { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); }
 .mode-chip.plain[aria-pressed="true"] { border-color: var(--gold); }
 .mode-chip[aria-pressed="false"].bus i, .mode-chip[aria-pressed="false"].tram i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
-.zoom-hint { padding: 8px 12px; color: var(--text-2); font-size: 13px; width: fit-content; max-width: 100%; }
+.zoom-hint { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.4; }
 
 .map-legend { position: absolute; z-index: 3; left: 12px; bottom: 28px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; max-width: calc(100% - 24px); padding: 8px 12px; color: var(--text-2); font-size: 12px; }
 .map-legend > span { display: inline-flex; align-items: center; gap: 6px; }
@@ -187,6 +191,23 @@ ul, ol { padding: 0; list-style: none; }
 .form-error p { margin: 0 0 8px; }
 .retry-inline { min-height: 36px; padding: 0 14px; font-size: 13px; }
 .why-note { display: grid; gap: 4px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.panel-hint { margin: 2px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.time-source { color: var(--text-2); font-weight: 600; }
+.time-source.forecast { color: var(--bus); }
+.forecast-card { display: grid; gap: 8px; margin-top: 16px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-2); }
+.forecast-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; }
+.forecast-main b { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--text); }
+.forecast-main span { color: var(--text-2); font-size: 14px; }
+.forecast-main small { color: var(--muted); font-size: 12px; }
+.forecast-summary { margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.forecast-range { margin: 0; color: var(--text-2); font-size: 13px; }
+.forecast-range b { color: var(--text); font-weight: 600; }
+.forecast-factors-title { margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.forecast-factors { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.forecast-factors li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px; color: var(--text-2); font-size: 13px; line-height: 1.4; }
+.forecast-factors b { font-size: 12px; font-weight: 600; white-space: nowrap; padding: 1px 7px; border-radius: 99px; background: var(--surface-3); }
+.forecast-factors b.later { color: var(--late); }
+.forecast-factors b.earlier { color: var(--early); }
 .why-paused { color: var(--muted); font-size: 12px; }
 .why-note small { color: var(--muted); font-size: 12px; }
 .estimate-note { margin-top: 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -340,7 +361,9 @@ ul, ol { padding: 0; list-style: none; }
   .chip-group { gap: 4px; }
   .mode-chip { padding: 0 10px; font-size: 12px; gap: 5px; }
   .vehicle-switch small { display: none; }
-  .vehicle-switch { padding: 8px 12px; }
+  .vehicle-switch { padding: 0 0 8px; }
+  .map-controls { padding: 8px 10px; gap: 6px; }
+  .control-row { grid-template-columns: 44px minmax(0, 1fr); gap: 6px; }
   .map-legend, .zoom-hint { display: none; }
   .panel {
     position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; border-left: 0; border-top: 1px solid var(--line-strong);
@@ -363,7 +386,7 @@ ul, ol { padding: 0; list-style: none; }
   .feed-status { font-size: 12px; letter-spacing: 0.02em; }
   .step-text small { font-size: 12px; }
   .section-kicker, .timeline-times small, .mae-value small, .coverage-label small { font-size: 12px; }
-  .mode-chip, .language-toggle { min-height: 44px; }
+  .mode-chip, .language-toggle, .vehicle-switch { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

@@ -97,6 +97,11 @@ class Departure(BaseModel):
     live: bool
     vehicle_id: str | None
     basis: Literal["live_delay", "scheduled"]
+    model_status: Literal["model", "held", "paused", "out_of_range", "passed"] | None = Field(
+        default=None,
+        description="Who estimated predicted_at, only with a trained model: the model "
+        "(model, held) or the baseline (the others); see app.predict.Prediction",
+    )
 
 
 class LineDepartures(BaseModel):

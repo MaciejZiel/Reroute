@@ -47,31 +47,69 @@ function inMinutes(departure: Departure, t: T) {
   return departure.minutes === 0 ? t("now") : `${departure.minutes} ${t("min")}`;
 }
 
-/** One quiet line under the next stops: why the model expects what it does at the named stop. */
-function WhyLine({ stop, t, language }: { stop: NextStop; t: T; language: Language }) {
-  const range = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null
-    ? `${t("likelyRange")}: ${preciseDelayText(stop.lower_delay_seconds, t("min"))} … ${preciseDelayText(stop.upper_delay_seconds, t("min"))}`
-    : null;
+/** The instant ``seconds`` after an ISO time, as ISO. */
+function shifted(iso: string, seconds: number): string {
+  return new Date(new Date(iso).getTime() + seconds * 1000).toISOString();
+}
+
+/** Seconds a factor moves the forecast: "+13 s", "−1 min 5 s". */
+function effectText(seconds: number, t: T): string {
+  return preciseDelayText(seconds, t("min"));
+}
+
+/** The model's forecast for one stop: when the vehicle arrives, how sure, and what moved the number. */
+function ForecastCard({ stop, t, language }: { stop: NextStop; t: T; language: Language }) {
+  const delay = stop.delay_seconds ?? 0;
+  const offset = Math.abs(delay) < 30
+    ? t("forecastOnTime")
+    : `${preciseDelayText(delay, t("min")).slice(1)} ${delay > 0 ? t("forecastAfter") : t("forecastBefore")}`;
+  const hasRange = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null;
+  const factors = stop.why?.factors.filter((factor) => Math.round(factor.effect_seconds) !== 0) ?? [];
   return (
-    <p className="why-note">
-      <span className="section-kicker">{t("whyThis")}: {stop.name}</span>
-      <span className="sr-only">. </span>
-      <span lang={language}>{stop.why?.summary}</span>
-      {range && <small>{range}</small>}
-    </p>
+    <div className="forecast-card">
+      <span className="section-kicker">{t("forecastFor")} {stop.name}</span>
+      <p className="forecast-main">
+        <b>{clock(stop.predicted_at ?? stop.scheduled_at, language)}</b>
+        <span>{offset} <small>({t("timetableTag")} {clock(stop.scheduled_at, language)})</small></span>
+      </p>
+      {hasRange && (
+        <p className="forecast-range">
+          {t("forecastBetween")} <b>{clock(shifted(stop.scheduled_at, stop.lower_delay_seconds!), language)}</b> {t("forecastAnd")} <b>{clock(shifted(stop.scheduled_at, stop.upper_delay_seconds!), language)}</b>
+        </p>
+      )}
+      {factors.length === 0 && stop.why?.summary && <p className="forecast-summary" lang={language}>{stop.why.summary}</p>}
+      {factors.length > 0 && <>
+        <span className="forecast-factors-title">{t("forecastFactors")}</span>
+        <ul className="forecast-factors" lang={language}>
+          {factors.map((factor) => (
+            <li key={factor.feature}>
+              <span>{factor.text}</span>
+              <b className={factor.effect_seconds > 0 ? "later" : "earlier"}>{effectText(factor.effect_seconds, t)}</b>
+            </li>
+          ))}
+        </ul>
+      </>}
+    </div>
   );
 }
 
+/** "forecast" when the model estimated the time, "estimate" when the baseline did, "timetable" without a vehicle. */
+function departureTag(departure: Departure): TranslationKey {
+  if (!departure.live || !departure.predicted_at) return "timetableTag";
+  return departure.model_status === "model" || departure.model_status === "held" ? "forecastTag" : "estimateTag";
+}
+
 function DepartureRow({ departure, language, t }: { departure: Departure; language: Language; t: T }) {
-  const expected = departure.predicted_at ?? departure.scheduled_at;
+  const tag = departureTag(departure);
   return (
     <li className="departure-row">
       <span className="departure-minutes">{inMinutes(departure, t)}</span>
       <span className="departure-main">
         <strong>{departure.headsign || "—"}</strong>
         <small>
-          {clock(expected, language)}
-          {departure.live && departure.predicted_at && <> · {t("scheduled")} {clock(departure.scheduled_at, language)}</>}
+          {tag === "timetableTag"
+            ? <>{t("timetableTag")} {clock(departure.scheduled_at, language)}</>
+            : <><span className={`time-source ${tag === "forecastTag" ? "forecast" : ""}`}>{t(tag)}</span> {clock(departure.predicted_at!, language)} · {t("timetableTag")} {clock(departure.scheduled_at, language)}</>}
           {departure.platform && <> · {t("platform")} {departure.platform}</>}
         </small>
       </span>
@@ -127,7 +165,9 @@ function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps)
                 {line.departures.length > 0
                   ? <span className="chip-row">{line.departures.slice(0, 4).map((departure) => (
                       <span key={departure.trip_id + departure.stop_id} className={`time-chip ${departure.live ? delayClass(departure.delay_seconds) : "scheduled"}`}
-                        title={`${clock(departure.scheduled_at, language)} ${t("scheduled")}`}>
+                        title={departureTag(departure) === "timetableTag"
+                          ? `${t("timetableTag")} ${clock(departure.scheduled_at, language)}`
+                          : `${t(departureTag(departure))} ${clock(departure.predicted_at!, language)} · ${t("timetableTag")} ${clock(departure.scheduled_at, language)}`}>
                         <b>{inMinutes(departure, t)}</b>
                         {departure.live && departure.delay_seconds !== null && <small>{delayText(departure.delay_seconds, t("min"))}</small>}
                       </span>))}</span>
@@ -176,6 +216,7 @@ function LineView(props: PanelProps) {
       {here && here.departures.length > 0 && <>
         <div className="section-line"><span className="section-kicker">{t("lineDeparturesHere")} {focus.stopName}</span></div>
         <ul className="departure-list">{here.departures.slice(0, 4).map((departure) => <DepartureRow key={departure.trip_id} departure={departure} language={language} t={t}/>)}</ul>
+        <p className="panel-hint">{t("departuresHint")}</p>
       </>}
       <div className="section-line"><span className="section-kicker">{t("lineVehicles")} · {vehicles.length}</span>{mean !== null && <span className="mean-delay">{t("meanDelayNow")}: <DelayBadge seconds={mean} t={t}/></span>}</div>
       {vehicles.length === 0 && lineVehicles && <p className="panel-note">{lineScope === "stop" ? `${t("noneHeadingHere")} ${focus.stopName ?? ""}.` : t("noLineVehicles")}</p>}
@@ -207,6 +248,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
         {message && <p className="panel-note">{t(message)}</p>}
         {data.next_stops.length > 0 && <>
           <div className="section-line"><span className="section-kicker">{t("nextStops")}</span></div>
+          {data.next_stops.some((stop) => stop.predicted_at) && <p className="panel-hint">{t("forecastHint")}</p>}
           <ol className="stop-timeline">{data.next_stops.map((stop) => (
             <li key={stop.sequence}>
               <span className="timeline-dot"/>
@@ -217,7 +259,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
         {(() => {
           const explained = firstExplained(data.next_stops);
           const paused = pausedNoteKey(data.next_stops);
-          if (explained) return <WhyLine stop={explained} t={t} language={language}/>;
+          if (explained) return <ForecastCard stop={explained} t={t} language={language}/>;
           return paused && <p className="why-note why-paused" role="status">{t(paused)}</p>;
         })()}
         <p className="estimate-note">{t("estimateNote")} {data.model.kind === "baseline" ? t("modelBaseline") : `${t("modelOther")}: ${data.model.name} ${data.model.version}.`}</p>

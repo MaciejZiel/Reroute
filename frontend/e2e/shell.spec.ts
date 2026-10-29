@@ -52,7 +52,7 @@ test("the search comes before the map in tab order and touch targets are 44px at
   });
   expect(order.search).toBeGreaterThanOrEqual(0);
   if (order.map >= 0) expect(order.search).toBeLessThan(order.map);
-  for (const locator of [page.locator(".mode-chip"), page.locator(".language-toggle")]) {
+  for (const locator of [page.locator(".mode-chip"), page.locator(".language-toggle"), page.locator(".vehicle-switch")]) {
     for (const box of await Promise.all((await locator.all()).map((l) => l.boundingBox()))) expect(box?.height).toBeGreaterThanOrEqual(44);
   }
 });

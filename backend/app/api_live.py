@@ -217,6 +217,7 @@ def _departure(
         live=live,
         vehicle_id=candidate.vehicle.vehicle_id if candidate.vehicle else None,
         basis="live_delay" if live else "scheduled",
+        model_status=candidate.prediction.model_status if live and candidate.prediction else None,
     )
 
 
