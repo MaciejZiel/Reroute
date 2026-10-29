@@ -155,18 +155,25 @@ class Observations:
 MOMENT_EVERY_S = 60.0  # on average one simulated request per minute of a trip's life
 
 
-def _moments(index: EventIndex, trip_id: str, observations: Observations | None, rng):
+def _moments(
+    index: EventIndex,
+    trip_id: str,
+    observations: Observations | None,
+    rng,
+    every_s: float = MOMENT_EVERY_S,
+):
     """Moments at which a prediction for this trip is simulated.
 
-    With observations: uniformly random times over the trip's observed life, so the age of the
-    newest vehicle report is what a live request sees (long gaps between reports are as likely to
-    be hit as they are in reality). Without: the instant each arrival became known."""
+    With observations: uniformly random times over the trip's observed life, on average one per
+    ``every_s`` seconds, so the age of the newest vehicle report is what a live request sees (long
+    gaps between reports are as likely to be hit as they are in reality). Without: the instant
+    each arrival became known."""
     if observations is None:
         return sorted({event.known_s for event in index.by_trip[trip_id]})
     times = observations.rows.get(trip_id, ([], []))[0]
     if len(times) < 2:
         return []
-    count = max(int((times[-1] - times[0]) / MOMENT_EVERY_S), 1)
+    count = max(int((times[-1] - times[0]) / every_s), 1)
     return sorted(float(m) for m in rng.uniform(times[0], times[-1], count))
 
 
@@ -175,6 +182,7 @@ def build_samples(
     lags: Sequence[int] = DEFAULT_LAGS,
     observations: Observations | None = None,
     seed: int = 1,
+    moment_every_s: float = MOMENT_EVERY_S,
 ) -> Samples:
     """Simulate predictions the way the server makes them.
 
@@ -187,13 +195,17 @@ def build_samples(
     index = EventIndex(events)
     wanted = set(lags)
     rng = np.random.default_rng(seed)
-    blocks: list[np.ndarray] = []
-    y, t0s, target_times, trips, lag_col = [], [], [], [], []
+    # Columns are turned into arrays one trip at a time: a list of millions of Python floats
+    # takes several times the memory of the same numbers in an array.
+    blocks: dict[str, list[np.ndarray]] = {
+        name: [] for name in ("X", "y", "t0", "target", "trip", "lag")
+    }
     trip_ids, lines, stops = [], [], []
     trip_numbers: dict[str, int] = {}
     for trip_id, trip_events in index.by_trip.items():
         rows: list[list[float]] = []
-        for moment in _moments(index, trip_id, observations, rng):
+        y, t0s, target_times, trips, lag_col = [], [], [], [], []
+        for moment in _moments(index, trip_id, observations, rng, moment_every_s):
             known = known_trip_events(index, trip_id, moment)
             if not known:
                 continue
@@ -220,18 +232,28 @@ def build_samples(
                 lines.append(target.line)
                 stops.append(target.stop_id)
         if rows:
-            blocks.append(np.array(rows, dtype=np.float64))
-    width = len(FEATURE_NAMES)
+            blocks["X"].append(np.array(rows, dtype=np.float64))
+            blocks["y"].append(np.array(y, dtype=np.float64))
+            blocks["t0"].append(np.array(t0s))
+            blocks["target"].append(np.array(target_times))
+            blocks["trip"].append(np.array(trips))
+            blocks["lag"].append(np.array(lag_col))
+
+    def column(name: str) -> np.ndarray:
+        return np.concatenate(blocks.pop(name)) if blocks[name] else np.array([])
+
+    if not blocks["X"]:
+        blocks["X"].append(np.empty((0, len(FEATURE_NAMES))))
     return Samples(
-        X=np.concatenate(blocks) if blocks else np.empty((0, width)),
-        y_delay=np.array(y, dtype=np.float64),
-        t0=np.array(t0s),
-        target_s=np.array(target_times),
-        trip=np.array(trips),
+        X=column("X"),
+        y_delay=column("y"),
+        t0=column("t0"),
+        target_s=column("target"),
+        trip=column("trip"),
         trip_id=trip_ids,
         line=lines,
         stop_id=stops,
-        lag=np.array(lag_col),
+        lag=column("lag"),
     )
 
 

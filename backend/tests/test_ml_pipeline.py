@@ -110,6 +110,25 @@ def test_the_base_of_the_prediction_is_the_vehicle_delay_when_known() -> None:
     assert np.allclose(without.base_delay, without.origin_delay)
 
 
+def test_sparser_moments_give_fewer_samples_with_the_same_columns() -> None:
+    events = synthetic_events(30)
+    observations = dataset.Observations(
+        {
+            trip: ([e.known_s for e in events if e.trip_id == trip], [60] * 14)
+            for trip in {e.trip_id for e in events}
+        }
+    )
+    every_minute = dataset.build_samples(events, observations=observations)
+    again = dataset.build_samples(events, observations=observations, moment_every_s=60.0)
+    sparse = dataset.build_samples(events, observations=observations, moment_every_s=240.0)
+    assert np.array_equal(every_minute.X, again.X, equal_nan=True)
+    assert 0 < len(sparse) < len(every_minute)
+    for samples in (every_minute, sparse):
+        assert samples.X.shape == (len(samples), len(dataset.FEATURE_NAMES))
+        assert samples.X.dtype == samples.y_delay.dtype == samples.t0.dtype == np.float64
+        assert len(samples.trip) == len(samples.lag) == len(samples.trip_id) == len(samples)
+
+
 def test_frozen_evaluation_scores_only_predictions_after_the_cutoff_and_fits_nothing(
     tmp_path,
 ) -> None:

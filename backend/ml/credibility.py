@@ -67,8 +67,16 @@ def rebuild(
     observations = (
         dataset.Observations.load(observations_path, known_until) if observations_path else None
     )
-    samples = dataset.build_samples(events, observations=observations)
-    folds = dataset.time_folds(events)  # the default fractions the model was trained with
+    # Cards from before these keys were recorded used the defaults.
+    samples = dataset.build_samples(
+        events,
+        observations=observations,
+        moment_every_s=card.get("moment_every_s", dataset.MOMENT_EVERY_S),
+    )
+    fractions = card.get("fold_fractions")
+    folds = (
+        dataset.time_folds(events, tuple(fractions)) if fractions else dataset.time_folds(events)
+    )
     assignment = folds.assign(samples)
     parts = {name: samples.take(assignment == i) for i, name in enumerate(FOLD_KEYS)}
     problems = []

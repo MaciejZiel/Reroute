@@ -36,6 +36,13 @@ def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def positive_seconds(text: str) -> float:
+    value = float(text)
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {text}")
+    return value
+
+
 def run_train(args: argparse.Namespace) -> int:
     import numpy as np
 
@@ -44,11 +51,17 @@ def run_train(args: argparse.Namespace) -> int:
     events = dataset.load_events(args.events)
     print(f"{len(events)} arrivals, {len({e.trip_id for e in events})} trips", file=sys.stderr)
     observations = dataset.Observations.load(args.observations) if args.observations else None
-    samples = dataset.build_samples(events, observations=observations)
+    moment_every = args.moment_every or dataset.MOMENT_EVERY_S
+    samples = dataset.build_samples(events, observations=observations, moment_every_s=moment_every)
     folds = dataset.time_folds(events, tuple(args.fractions))
     assignment = folds.assign(samples)
     parts = {name: samples.take(assignment == i) for i, name in enumerate(dataset.FOLDS)}
     dropped = int((assignment < 0).sum())
+    sample_count = len(samples)
+    vehicle_delay_known_share = float(
+        1 - np.isnan(samples.X[:, dataset.FEATURE_NAMES.index("vehicle_delay_s")]).mean()
+    )
+    del samples  # the folds hold copies; the full set is gigabytes on a week of data
     exclude = () if args.calendar_features else train.SMALL_DATA_EXCLUDED
     heads = train.fit(
         parts["train"], parts["early_stop"], parts["calibration"], exclude=tuple(exclude)
@@ -87,10 +100,11 @@ def run_train(args: argparse.Namespace) -> int:
                 }
                 for i, name in enumerate(dataset.FOLDS)
             },
-            "samples": len(samples),
-            "vehicle_delay_known_share": float(
-                1 - np.isnan(samples.X[:, dataset.FEATURE_NAMES.index("vehicle_delay_s")]).mean()
-            ),
+            # How the folds and the samples were made, so a later rebuild makes the same ones.
+            "fold_fractions": list(args.fractions),
+            "moment_every_s": moment_every,
+            "samples": sample_count,
+            "vehicle_delay_known_share": vehicle_delay_known_share,
             "dropped_straddling_a_boundary": dropped,
             "lags_in_stops": list(dataset.DEFAULT_LAGS),
             "features": heads.features,
@@ -149,6 +163,13 @@ def main() -> int:
         "--calendar-features",
         action="store_true",
         help="also use hour, weekday and stop number (only sensible with several days of data)",
+    )
+    fit.add_argument(
+        "--moment-every",
+        type=positive_seconds,
+        metavar="SECONDS",
+        help="simulate one prediction per this many seconds of a trip's life (default 60); "
+        "a larger value gives fewer, less correlated samples and needs less memory",
     )
     frozen = commands.add_parser(
         "evaluate-frozen",
