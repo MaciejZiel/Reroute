@@ -36,6 +36,13 @@ def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def positive_seconds(text: str) -> float:
+    value = float(text)
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {text}")
+    return value
+
+
 def run_train(args: argparse.Namespace) -> int:
     import numpy as np
 
@@ -159,7 +166,7 @@ def main() -> int:
     )
     fit.add_argument(
         "--moment-every",
-        type=float,
+        type=positive_seconds,
         metavar="SECONDS",
         help="simulate one prediction per this many seconds of a trip's life (default 60); "
         "a larger value gives fewer, less correlated samples and needs less memory",
