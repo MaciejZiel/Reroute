@@ -58,7 +58,10 @@ for (const language of LANGUAGES) {
     await expect(card).toContainText(summary);  // no factors: the summary is shown instead
     await expect(card.locator("[lang]")).toHaveAttribute("lang", language);
     await expect(card.locator(".forecast-range")).toHaveText(
-      language === "pl" ? /^8 na 10 razy między \d\d:\d\d a \d\d:\d\d$/ : /^8 times out of 10 between \d\d:\d\d and \d\d:\d\d$/);
+      // 12:05Z is 14:05 in Warsaw; the range is the timetable plus 244 s and 305 s.
+      language === "pl" ? "W 8 przypadkach na 10 między 14:09 a 14:10" : "8 times out of 10 between 14:09 and 14:10");
+    await expect(card.locator(".forecast-main")).toContainText(
+      language === "pl" ? "1 min 29 s później niż w rozkładzie" : "1 min 29 s later than timetabled");
     // 1 min 29 s late is "on time" on the badge: the badge says how late and why it counts as on time.
     const badge = page.locator(".delay-badge.big");
     await expect(badge).toContainText("1 min 29 s");
@@ -99,9 +102,26 @@ for (const language of LANGUAGES) {
     const rows = page.locator(".departure-row");
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText(language === "pl" ? "prognoza" : "forecast");
-    await expect(rows.nth(1)).toContainText(language === "pl" ? "szacunek" : "estimate");
+    await expect(rows.nth(1)).toContainText(language === "pl" ? "szacowany" : "estimate");
     await expect(rows.nth(2)).not.toContainText(language === "pl" ? "prognoza" : "forecast");
     await expect(rows.nth(2)).toContainText(language === "pl" ? "rozkład" : "timetable");
+  });
+
+  test(`the forecast card says early and on time in words (${language})`, async ({ page }) => {
+    await page.addInitScript((lang) => localStorage.setItem("reroute-language", lang), language);
+    let delay = -45;
+    await mockApi(page, () => vehicleDetail({
+      model_status: "model", delay_seconds: delay, why: { summary: "s", factors: [] },
+    }));
+    await page.goto("/");
+    await openVehicle(page);
+    const main = page.locator(".forecast-card .forecast-main");
+    await expect(main).toContainText(language === "pl" ? "45 s wcześniej niż w rozkładzie" : "45 s earlier than timetabled");
+
+    delay = 10;
+    await page.reload();
+    await openVehicle(page);
+    await expect(main).toContainText(language === "pl" ? "zgodnie z rozkładem" : "on time");
   });
 
   test(`the forecast card lists what moved the number, later in red and earlier in blue (${language})`, async ({ page }) => {

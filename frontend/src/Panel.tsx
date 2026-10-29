@@ -66,7 +66,7 @@ function ForecastCard({ stop, t, language }: { stop: NextStop; t: T; language: L
   const hasRange = stop.lower_delay_seconds != null && stop.upper_delay_seconds != null;
   const factors = stop.why?.factors.filter((factor) => Math.round(factor.effect_seconds) !== 0) ?? [];
   return (
-    <section className="forecast-card" aria-label={`${t("forecastFor")} ${stop.name}`}>
+    <div className="forecast-card">
       <span className="section-kicker">{t("forecastFor")} {stop.name}</span>
       <p className="forecast-main">
         <b>{clock(stop.predicted_at ?? stop.scheduled_at, language)}</b>
@@ -89,7 +89,7 @@ function ForecastCard({ stop, t, language }: { stop: NextStop; t: T; language: L
           ))}
         </ul>
       </>}
-    </section>
+    </div>
   );
 }
 
@@ -248,7 +248,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
         {message && <p className="panel-note">{t(message)}</p>}
         {data.next_stops.length > 0 && <>
           <div className="section-line"><span className="section-kicker">{t("nextStops")}</span></div>
-          <p className="panel-hint">{t("forecastHint")}</p>
+          {data.next_stops.some((stop) => stop.predicted_at) && <p className="panel-hint">{t("forecastHint")}</p>}
           <ol className="stop-timeline">{data.next_stops.map((stop) => (
             <li key={stop.sequence}>
               <span className="timeline-dot"/>
