@@ -51,6 +51,8 @@ export interface Departure {
   live: boolean;
   vehicle_id: string | null;
   basis: "live_delay" | "scheduled";
+  /** Only with a trained model: "model" or "held" when the model estimated predicted_at, else the baseline did. */
+  model_status?: "model" | "held" | "paused" | "out_of_range" | "passed" | null;
 }
 
 export interface LineDepartures {
@@ -111,7 +113,7 @@ export interface NextStop {
   /** Only with a trained model: it answered, kept its last answer ("held"), the baseline answered ("paused"), or the vehicle is already at or past the stop ("passed"). */
   model_status?: "model" | "held" | "paused" | "out_of_range" | "passed" | null;
   pause_reason?: "no_vehicle" | "vehicle_report" | "last_stop" | "no_stop" | null;
-  /** Present only when a trained model answered; the text is English. */
+  /** Present only when a trained model answered; the text is in the requested language. */
   why?: { summary: string; factors: { feature: string; effect_seconds: number; text: string }[] } | null;
 }
 

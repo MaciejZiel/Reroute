@@ -30,11 +30,19 @@ export default function MapControls(props: Props) {
           <span className="switch-text"><b>{t("showAllVehicles")}</b><small>{showAll ? `${vehicleCount} ${t("inService")}` : t("showAllHint")}</small></span>
         </button>
       )}
-      <div className="chip-group" role="group" aria-label={t("mapLayers")}>
-        <button type="button" className="mode-chip bus" aria-pressed={showBuses} onClick={() => onBuses(!showBuses)}><i aria-hidden="true"/>{t("buses")}</button>
-        <button type="button" className="mode-chip tram" aria-pressed={showTrams} onClick={() => onTrams(!showTrams)}><i aria-hidden="true"/>{t("trams")}</button>
-        <button type="button" className="mode-chip plain" aria-pressed={punctuality} onClick={onPunctuality}>{t("punctualityShort")}</button>
-        <button type="button" className="mode-chip plain" aria-pressed={model} onClick={onModel}>{t("modelChip")}</button>
+      <div className="control-row" role="group" aria-label={t("mapLayers")}>
+        <span className="control-label" aria-hidden="true">{t("showLabel")}</span>
+        <span className="chip-group">
+          <button type="button" className="mode-chip bus" aria-pressed={showBuses} onClick={() => onBuses(!showBuses)}><i aria-hidden="true"/>{t("buses")}</button>
+          <button type="button" className="mode-chip tram" aria-pressed={showTrams} onClick={() => onTrams(!showTrams)}><i aria-hidden="true"/>{t("trams")}</button>
+        </span>
+      </div>
+      <div className="control-row" role="group" aria-label={t("viewLabel")}>
+        <span className="control-label" aria-hidden="true">{t("viewLabel")}</span>
+        <span className="chip-group">
+          <button type="button" className="mode-chip plain" aria-pressed={punctuality} onClick={onPunctuality}>{t("punctualityShort")}</button>
+          <button type="button" className="mode-chip plain" aria-pressed={model} onClick={onModel}>{t("modelChip")}</button>
+        </span>
       </div>
       {zoomedOut && <p className="zoom-hint" role="status">{t("zoomForStops")}</p>}
     </div>

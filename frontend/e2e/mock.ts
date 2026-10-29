@@ -6,7 +6,12 @@ const empty = { type: "FeatureCollection", features: [], data_mode: "live", obse
 const departures = {
   stop: { id: "100101", name: "Rondo Daszyńskiego", latitude: 52.2, longitude: 21.0 }, platforms: [],
   generated_at: "2026-10-13T12:00:00Z", horizon_minutes: 120, data_mode: "live", live_vehicles: 1, notice: "",
-  lines: [{ line: "9", route_id: "9", mode: "tram", long_name: "Łazienki - Koniec", departures: [] }],
+  lines: [{ line: "9", route_id: "9", mode: "tram", long_name: "Łazienki - Koniec", departures: [
+    // the model's forecast, the baseline's estimate and a trip with no vehicle yet
+    { trip_id: "d1", stop_id: "100101", platform: "01", headsign: "Koniec", scheduled_at: "2026-10-13T12:02:00Z", predicted_at: "2026-10-13T12:04:00Z", delay_seconds: 120, minutes: 4, live: true, vehicle_id: null, basis: "live_delay", model_status: "model" },
+    { trip_id: "d2", stop_id: "100101", platform: "01", headsign: "Koniec", scheduled_at: "2026-10-13T12:12:00Z", predicted_at: "2026-10-13T12:13:00Z", delay_seconds: 60, minutes: 13, live: true, vehicle_id: null, basis: "live_delay", model_status: "paused" },
+    { trip_id: "d3", stop_id: "100101", platform: "01", headsign: "Koniec", scheduled_at: "2026-10-13T12:22:00Z", predicted_at: null, delay_seconds: null, minutes: 22, live: false, vehicle_id: null, basis: "scheduled" },
+  ] }],
 };
 const line = { line: "9", route_id: "9", long_name: "Łazienki - Koniec", mode: "tram", shape: null, stops: [], alerts: [], data_mode: "live" };
 const lineVehicles = {
