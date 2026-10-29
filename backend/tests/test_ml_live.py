@@ -310,6 +310,8 @@ def test_shap_is_computed_only_when_asked_and_never_for_the_departures_board(
 
     board = client.get("/api/stops/200101/departures")
     assert board.status_code == 200 and shap_calls == []
+    live = [d for line in board.json()["lines"] for d in line["departures"] if d["live"]]
+    assert live and all(d["model_status"] in ("model", "held") for d in live)
 
     first = client.get("/api/vehicles/V/9/2").json()
     assert first["next_stops"][0]["why"] is not None and len(shap_calls) == 1
