@@ -34,7 +34,10 @@ class Ridge:
     def design(self, samples: Samples) -> np.ndarray:
         x = samples.X[:, self.columns()]
         unknown = np.isnan(x)
-        z = (np.where(unknown, self.mean, x) - self.mean) / self.scale
+        z = np.where(unknown, self.mean, x)
+        del x
+        z -= self.mean  # in place: one copy of the columns instead of three
+        z /= self.scale
         flags = unknown[:, self.missing].astype(float)
         return np.hstack([z, flags])
 
@@ -43,12 +46,20 @@ class Ridge:
         return samples.base_delay + self.design(samples) @ self.coef + self.intercept
 
 
-def _solve(z: np.ndarray, y: np.ndarray, alpha: float) -> tuple[np.ndarray, float]:
-    """Ridge with an unpenalised intercept, by centring the columns and the target."""
-    zc, yc = z - z.mean(axis=0), y - y.mean()
-    gram = zc.T @ zc + alpha * np.eye(z.shape[1])
-    coef = np.linalg.solve(gram, zc.T @ yc)
-    return coef, float(y.mean() - z.mean(axis=0) @ coef)
+class _Normal:
+    """The centred normal equations of one design matrix, built once for every penalty: ridge
+    with an unpenalised intercept, by centring the columns and the target. ``z`` is centred in
+    place, so pass a matrix nothing else uses."""
+
+    def __init__(self, z: np.ndarray, y: np.ndarray) -> None:
+        self.z_mean, self.y_mean = z.mean(axis=0), y.mean()
+        z -= self.z_mean
+        self.gram = z.T @ z
+        self.target = z.T @ (y - self.y_mean)
+
+    def solve(self, alpha: float) -> tuple[np.ndarray, float]:
+        coef = np.linalg.solve(self.gram + alpha * np.eye(len(self.gram)), self.target)
+        return coef, float(self.y_mean - self.z_mean @ coef)
 
 
 def fit(
@@ -67,13 +78,19 @@ def fit(
     spread = np.sqrt(np.where(unknown, 0.0, (x - mean) ** 2).sum(axis=0) / count)
     scale = np.where(spread > 0, spread, 1.0)
     missing = [int(i) for i in np.flatnonzero(unknown.any(axis=0))]
+    del x, unknown
+    # The design does not depend on the penalty: build it once, not once per alpha (on a week of
+    # data each copy of the training design is gigabytes).
+    draft = Ridge(features, mean, scale, missing, np.empty(0), 0.0, 0.0)
+    normal = _Normal(draft.design(train), train.residual)
+    held_out = draft.design(early_stop)
     best: Ridge | None = None
     best_error = np.inf
     for alpha in alphas:
-        draft = Ridge(features, mean, scale, missing, np.empty(0), 0.0, alpha)
-        coef, intercept = _solve(draft.design(train), train.residual, alpha)
+        coef, intercept = normal.solve(alpha)
         candidate = Ridge(features, mean, scale, missing, coef, intercept, alpha)
-        error = float(np.abs(candidate.predict(early_stop) - early_stop.y_delay).mean())
+        predicted = early_stop.base_delay + held_out @ coef + intercept
+        error = float(np.abs(predicted - early_stop.y_delay).mean())
         if error < best_error:
             best, best_error = candidate, error
     assert best is not None
