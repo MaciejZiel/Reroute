@@ -18,6 +18,19 @@ describe("comparedScores", () => {
     expect(picked[2].score.mae_s.value).toBe(40.6);
   });
 
+  it("adds the best baseline after persistence when it is another predictor", () => {
+    const scores = [
+      score("persistence (BaselinePredictor)", 93.6),
+      score("calibrated persistence", 83.8),
+      score("ridge regression (same features)", 79.7),
+      score("gradient boosted trees (median)", 74.4),
+    ];
+    const picked = comparedScores(scores, "calibrated persistence");
+    expect(picked.map((item) => item.key)).toEqual(["predPersistence", "predBestBaseline", "predLinear", "predTrees"]);
+    expect(picked[1].score.mae_s.value).toBe(83.8);
+    expect(comparedScores(scores, "persistence (BaselinePredictor)").map((item) => item.key)).toEqual(["predPersistence", "predLinear", "predTrees"]);
+  });
+
   it("copes with a card that has no ridge row (an older model file)", () => {
     const picked = comparedScores([score("persistence (BaselinePredictor)", 44.5), score("gradient boosted trees (median)", 40.6)]);
     expect(picked.map((item) => item.key)).toEqual(["predPersistence", "predTrees"]);
@@ -37,6 +50,7 @@ describe("number and label formatting", () => {
   });
   it("tells the evening in Warsaw time", () => {
     expect(warsawClock("2026-10-13T19:14:11Z", "en")).toBe("21:14");
+    expect(warsawClock("2026-10-29T10:59:47Z", "pl")).toBe("12:00");
   });
 });
 

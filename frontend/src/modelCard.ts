@@ -1,19 +1,30 @@
 import type { CardCoverage, CardScore, Language } from "./types";
 
-/** The three predictors the panel compares, in the order they are drawn. Other names are ignored. */
+/** The predictors the panel compares, in the order they are drawn. Other names are ignored. */
 export const COMPARED = [
-  { match: "persistence", key: "predPersistence" },
+  { match: "persistence (BaselinePredictor)", key: "predPersistence" },
   { match: "ridge", key: "predLinear" },
   { match: "gradient boosted", key: "predTrees" },
 ] as const;
 
-export type ComparedKey = (typeof COMPARED)[number]["key"];
+export type ComparedKey = (typeof COMPARED)[number]["key"] | "predBestBaseline";
 
-export function comparedScores(scores: CardScore[]): { key: ComparedKey; score: CardScore }[] {
-  return COMPARED.flatMap(({ match, key }) => {
+/** The compared rows; ``bestBaseline`` (the card's ``best_baseline``, which the stated gain is
+ * measured against) gets its own row after persistence when it is a different predictor. */
+export function comparedScores(
+  scores: CardScore[],
+  bestBaseline?: string | null,
+): { key: ComparedKey; score: CardScore }[] {
+  const rows: { key: ComparedKey; score: CardScore }[] = COMPARED.flatMap(({ match, key }) => {
     const score = scores.find((item) => item.name.includes(match));
     return score ? [{ key, score }] : [];
   });
+  const best = scores.find((item) => item.name === bestBaseline);
+  if (best && !rows.some(({ score }) => score === best)) {
+    const after = rows.findIndex(({ key }) => key === "predPersistence") + 1;
+    rows.splice(after, 0, { key: "predBestBaseline", score: best });
+  }
+  return rows;
 }
 
 const HORIZONS: Record<string, string> = {
@@ -48,7 +59,9 @@ export function hoursByWindow(rows: CardCoverage[]): { heldOut: CardCoverage[]; 
 
 /** Warsaw wall-clock "21:14" of an ISO instant, the zone the evening is told in. */
 export function warsawClock(iso: string, language: Language): string {
-  return new Intl.DateTimeFormat(language === "pl" ? "pl-PL" : "en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw" }).format(new Date(iso));
+  // To the nearest minute: window edges fall a few seconds before the hour ("11:59:47" is noon).
+  const instant = Math.round(new Date(iso).getTime() / 60_000) * 60_000;
+  return new Intl.DateTimeFormat(language === "pl" ? "pl-PL" : "en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw" }).format(instant);
 }
 
 export function warsawDate(iso: string, language: Language): string {
