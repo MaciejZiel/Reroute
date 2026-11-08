@@ -176,3 +176,67 @@ def test_frozen_evaluation_scores_only_predictions_after_the_cutoff_and_fits_not
     assert "Frozen model" in text and "persistence" in text
     nothing = frozen.evaluate_frozen(model_path, csv_path, None, since=BASE * 2)
     assert nothing["samples"] == 0
+    assert sum(row["n"] for row in result["by_day"].values()) == result["samples"]
+    capped = frozen.evaluate_frozen(model_path, csv_path, None, since=cutoff, per_day=5)
+    assert all(row["n"] <= 5 for row in capped["by_day"].values())
+    assert capped["samples"] == sum(row["n"] for row in capped["by_day"].values())
+    assert "Warsaw day" in frozen.render(capped)
+
+    from ml import decision
+
+    decided = decision.evaluate_decisions(model_path, csv_path, None, since=cutoff)
+    assert decided["tuned_on"] > 0 and decided["scored_on"] > 0
+    assert decided["split"] >= cutoff
+    for row in decided["results"].values():
+        for name in ("model", "persistence", "timetable"):
+            assert 0.0 <= row[name]["missed"].value <= 1.0 and row[name]["wait_s"] >= 0
+    assert "persistence" in decision.render(decided)
+    assert decision.evaluate_decisions(model_path, csv_path, None, since=BASE * 2)["samples"] == 0
+
+
+def test_samples_for_a_subset_of_trips_match_the_full_build_and_concatenate_back() -> None:
+    from app.ml.featurize import EventIndex
+
+    events = synthetic_events(30)
+    full = dataset.build_samples(events)
+    index = EventIndex(events)
+    trips = sorted(index.by_trip)
+    halves = [trips[: len(trips) // 2], trips[len(trips) // 2 :]]
+    parts = [dataset.build_samples(events, index=index, trips=half) for half in halves]
+    for half, part in zip(halves, parts, strict=True):
+        mask = np.isin(np.array(full.trip_id), half)
+        # Features still see every trip's events, so a subset gives exactly the full build's rows.
+        np.testing.assert_array_equal(np.sort(full.X[mask], axis=0), np.sort(part.X, axis=0))
+    joined = dataset.concat_samples(parts)
+    assert len(joined) == len(full)
+    assert len(np.unique(joined.trip)) == len(set(joined.trip_id))
+
+
+def test_observations_merge_interleaved_trips_in_time_order(tmp_path) -> None:
+    from ml.dataset import Observations
+
+    path = tmp_path / "observations.csv"
+    path.write_text(
+        "trip_id,observed_at,delay_s\n"
+        "a,2026-11-01T10:02:00+00:00,20\n"
+        "b,2026-11-01T10:00:00+00:00,5\n"
+        "a,2026-11-01T10:00:00+00:00,10\n"
+        "b,2026-11-01T10:01:00+00:00,6\n"
+        "a,2026-11-01T10:01:00+00:00,15\n"
+    )
+    loaded = Observations.load(path)
+    times, delays = loaded.rows["a"]
+    assert list(delays) == [10, 15, 20] and list(times) == sorted(times)
+    assert list(loaded.rows["b"][1]) == [5, 6]
+
+
+def test_relative_mean_cut_compares_means_over_each_strategys_own_rows() -> None:
+    from ml.metrics import ClusterBootstrap
+
+    boot = ClusterBootstrap(np.array(["a", "b", "c", "d"] * 5))
+    base = np.full(20, 100.0)
+    model = np.full(20, 80.0)
+    model_mask = np.ones(20, dtype=bool)
+    model_mask[:4] = False  # rows the model "missed" would have counted as zero wait
+    cut = boot.relative_mean_cut(base, np.ones(20, dtype=bool), model, model_mask)
+    assert abs(cut.value - 0.2) < 1e-9 and abs(cut.low - 0.2) < 1e-9

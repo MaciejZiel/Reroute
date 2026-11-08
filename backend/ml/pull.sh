@@ -5,7 +5,7 @@
 #
 # Reads from the database in DATABASE_URL (psql), or through SSH when REROUTE_SSH is set
 # (for example REROUTE_SSH="ssh -p 8022 user@host"; psql then runs on the server, so no database
-# credentials ever leave it). Arrivals are what the model learns from; observations (only
+# credentials ever leave it; the CSV travels gzipped). Arrivals are what the model learns from; observations (only
 # trip, time and the delay the vehicle reported) give it the vehicle's latest delay and are
 # kept 7 days by the collector. OBSERVATION_DAYS limits how far back they are copied (default 7).
 set -eu
@@ -15,7 +15,14 @@ days="${OBSERVATION_DAYS:-7}"
 
 run() {
   if [ -n "${REROUTE_SSH:-}" ]; then
-    $REROUTE_SSH "psql -d reroute -c \"$1\""
+    # Compressed on the server: CSV shrinks about five times, which is most of the time of a pull
+    # from a home server. Through a file, so a failed psql (pipefail on the server) still stops
+    # this script: a plain "ssh | gunzip" would report gunzip's success.
+    packed="$(mktemp)"
+    trap 'rm -f "$packed"' EXIT
+    $REROUTE_SSH "set -o pipefail; psql -d reroute -c \"$1\" | gzip -1" > "$packed"
+    gunzip -c "$packed"
+    rm -f "$packed"
   else
     psql "${DATABASE_URL:?set DATABASE_URL or REROUTE_SSH}" -c "$1"
   fi

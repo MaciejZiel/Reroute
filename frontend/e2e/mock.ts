@@ -6,7 +6,15 @@ const empty = { type: "FeatureCollection", features: [], data_mode: "live", obse
 const departures = {
   stop: { id: "100101", name: "Rondo Daszyńskiego", latitude: 52.2, longitude: 21.0 }, platforms: [],
   generated_at: "2026-10-13T12:00:00Z", horizon_minutes: 120, data_mode: "live", live_vehicles: 1, notice: "",
-  lines: [{ line: "9", route_id: "9", mode: "tram", long_name: "Łazienki - Koniec", departures: [] }],
+  lines: [{ line: "9", route_id: "9", mode: "tram", long_name: "Łazienki - Koniec", departures: [
+    // The model answered: a window. Live without the model: one time. Not started: the timetable.
+    { trip_id: "t1", stop_id: "100101", platform: "01", headsign: "Koniec", scheduled_at: "2026-10-13T12:05:00Z", predicted_at: "2026-10-13T12:07:00Z",
+      delay_seconds: 120, lower_delay_seconds: 60, upper_delay_seconds: 240, model_status: "model", minutes: 7, live: true, vehicle_id: "V/9/23", basis: "live_delay" },
+    { trip_id: "t2", stop_id: "100101", platform: "01", headsign: "Koniec", scheduled_at: "2026-10-13T12:10:00Z", predicted_at: "2026-10-13T12:10:30Z",
+      delay_seconds: 30, lower_delay_seconds: null, upper_delay_seconds: null, model_status: "out_of_range", minutes: 10, live: true, vehicle_id: "V/9/24", basis: "live_delay" },
+    { trip_id: "t3", stop_id: "100102", platform: "02", headsign: "Łazienki", scheduled_at: "2026-10-13T12:20:00Z", predicted_at: null,
+      delay_seconds: null, minutes: 20, live: false, vehicle_id: null, basis: "scheduled" },
+  ] }],
 };
 const line = { line: "9", route_id: "9", long_name: "Łazienki - Koniec", mode: "tram", shape: null, stops: [], alerts: [], data_mode: "live" };
 const lineVehicles = {
@@ -43,6 +51,25 @@ export const MODEL_CARD = {
   serving_range: { max_stops_ahead: 12 },
 };
 
+
+const oddsCell = (day: string, hour: number, late3: number, n = 40) => ({
+  day_type: day, hour, n, days: n > 20 ? 18 : 6, late3_share: late3, late5_share: late3 / 2, early_share: 0.03, median_s: Math.round(late3 * 400), p90_s: Math.round(late3 * 900 + 60),
+});
+const odds = {
+  stop: { id: "100101", name: "Rondo Daszyńskiego", latitude: 52.2, longitude: 21.0, platform: "01" },
+  ready: true, window_days: 28, first_day: "2026-10-11", last_day: "2026-11-07",
+  lines: [
+    { line: "9", route_id: "9", mode: "tram", stop_id: "100101", platform: "01", headsign: "Koniec",
+      cells: [
+        ...Array.from({ length: 20 }, (_, i) => oddsCell("weekday", (i + 5) % 24, [0.02, 0.08, 0.2, 0.35][i % 4])),
+        ...Array.from({ length: 18 }, (_, i) => oddsCell("saturday", i + 6, 0.06, 20)),
+        oddsCell("sunday", 9, 0.4, 3),
+      ] },
+    { line: "10", route_id: "10", mode: "tram", stop_id: "100102", platform: "02", headsign: "Łazienki",
+      cells: [oddsCell("weekday", 8, 0.5)] },
+  ],
+};
+
 /** Mock the whole API: a stop search with several hits, one line with one vehicle. */
 export async function mockApi(page: Page, vehicle: (url: URL) => unknown) {
   await page.route("**/api/**", async (route) => {
@@ -52,8 +79,13 @@ export async function mockApi(page: Page, vehicle: (url: URL) => unknown) {
     if (path === "network" || path === "vehicles") body = empty;
     else if (path === "model") body = MODEL_CARD;
     else if (path === "stops") {
-      body = { query: url.searchParams.get("q"), results: [1, 2, 3, 4].map((n) => ({ ...STOP, id: `10010${n}`, name: `Rondo ${n}` })) };
-    } else if (path.startsWith("stops/")) body = departures;
+      const q = url.searchParams.get("q") ?? "";
+      // A slow answer for "Slow…" queries, to check that Enter never picks an older query's result.
+      if (q.startsWith("Slow")) await new Promise((resolve) => setTimeout(resolve, 600));
+      const base = q.startsWith("Slow") ? "Slow" : "Rondo";
+      body = { query: q, results: [1, 2, 3, 4].map((n) => ({ ...STOP, id: `10010${n}`, name: `${base} ${n}` })) };
+    } else if (path.endsWith("/odds")) body = odds;
+    else if (path.startsWith("stops/")) body = departures;
     else if (path === "lines/9") body = line;
     else if (path === "lines/9/vehicles") body = lineVehicles;
     else if (path.startsWith("vehicles/")) body = vehicle(url);

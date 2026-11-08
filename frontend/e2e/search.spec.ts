@@ -30,7 +30,7 @@ for (const language of LANGUAGES) {
       await first.click();
       await expect(box).toHaveValue("");
       await expect(page.locator(".search-results")).toHaveCount(0);
-      await expect(page.locator(".panel")).toContainText("Rondo 1");
+      await expect(page.locator(".panel h2")).toContainText("Rondo Daszyńskiego");
     });
   }
 }
@@ -88,3 +88,77 @@ for (const language of LANGUAGES) {
     await expect(note).toContainText(language === "pl" ? "Brak prognozy modelu" : "No model prediction");
   });
 }
+
+test("a stop picked with the keyboard moves focus to the panel, and the next Tab stays in it", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  await expect(page.locator("body")).toBeFocused();
+
+  const box = page.getByRole("combobox");
+  await box.fill("Rondo");
+  await expect(page.locator(".search-results li").first()).toBeVisible();
+  await box.press("Enter");
+
+  const heading = page.locator(".panel h2");
+  await expect(heading).toBeFocused();
+  await expect(heading).toContainText("Rondo");
+  await page.keyboard.press("Tab");
+  expect(await page.evaluate(() => Boolean(document.activeElement?.closest(".panel")))).toBe(true);
+});
+
+test("a stop opened earlier is offered again on the start panel", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  await page.getByRole("combobox").fill("Rondo");
+  await page.locator(".search-results li").first().click();
+  await expect(page.locator(".panel h2")).toContainText("Rondo Daszyńskiego");
+  await page.locator(".panel-close").click();
+
+  const recent = page.locator(".recent-row");
+  await expect(recent).toHaveCount(1);
+  await expect(recent).toContainText("Rondo 1");
+  await recent.click();
+  await expect(page.locator(".panel h2")).toContainText("Rondo Daszyńskiego");
+});
+
+test("a departure shows the model's arrival window only where the model answered", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.addInitScript(() => localStorage.setItem("reroute-language", "pl"));
+  await page.goto("/");
+  await page.getByRole("combobox").fill("Rondo");
+  await page.locator(".search-results li").first().click();
+  await page.locator(".line-row").first().click();
+  const rows = page.locator(".departure-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator(".forecast")).toHaveText(/14:06.14:09/);
+  await expect(rows.nth(0).locator(".delay-badge")).toHaveText("+2 min");
+  await expect(rows.nth(1).locator(".forecast")).toHaveCount(0);
+  await expect(rows.nth(1)).toContainText("14:10");
+  await expect(rows.nth(1).locator(".delay-badge")).toHaveText("na czas");
+  await expect(rows.nth(2).locator(".delay-badge")).toHaveText("rozkład");
+});
+
+test("a stop lists each direction of a line on its own row, in a fixed order", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.addInitScript(() => localStorage.setItem("reroute-language", "pl"));
+  await page.goto("/");
+  await page.getByRole("combobox").fill("Rondo");
+  await page.locator(".search-results li").first().click();
+  const rows = page.locator(".line-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("→ Koniec");
+  await expect(rows.nth(1)).toContainText("→ Łazienki");
+  await expect(page.locator(".panel-sub")).toHaveText("0 słupków · 1 linia kursuje");
+});
+
+test("Enter right after typing waits for the results of the typed text", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  const box = page.getByRole("combobox");
+  await box.fill("Rondo");
+  await expect(page.locator(".search-results li").first()).toContainText("Rondo 1");
+  await box.fill("Slow");
+  await box.press("Enter");
+  await expect(page.locator(".panel h2")).toContainText("Rondo Daszyńskiego"); // departures mock name
+  expect(await page.evaluate(() => localStorage.getItem("reroute-recent-stops") ?? "")).toContain("Slow 1");
+});

@@ -25,6 +25,7 @@ from .live import (
     vehicles_of_trips,
 )
 from .models import Route, RouteStop, Stop, TripSchedule, VehiclePosition
+from .odds import ODDS_DAYS, is_populated, station_odds
 from .predict import Prediction, get_predictor
 from .schemas import (
     AlertInfo,
@@ -37,10 +38,13 @@ from .schemas import (
     LineStop,
     ModelInfo,
     NextStop,
+    OddsCell,
+    OddsLine,
     PredictionItem,
     PredictionsResponse,
     StopDeparturesResponse,
     StopMatch,
+    StopOddsResponse,
     StopSearchResponse,
     StopSummary,
     VehicleDetail,
@@ -204,7 +208,8 @@ def _departure(
 ) -> Departure:
     live = candidate.prediction is not None and candidate.prediction.basis == "live_delay"
     expected = candidate.expected_at
-    delay = candidate.prediction.predicted_delay_s if live and candidate.prediction else None
+    prediction = candidate.prediction if live else None
+    delay = prediction.predicted_delay_s if prediction else None
     return Departure(
         trip_id=candidate.trip_id,
         stop_id=candidate.stop_id,
@@ -213,6 +218,9 @@ def _departure(
         scheduled_at=candidate.scheduled_at,
         predicted_at=expected if live else None,
         delay_seconds=delay,
+        lower_delay_seconds=prediction.lower_delay_s if prediction else None,
+        upper_delay_seconds=prediction.upper_delay_s if prediction else None,
+        model_status=prediction.model_status if prediction else None,
         minutes=max(int((expected - now).total_seconds() // 60), 0),
         live=live,
         vehicle_id=candidate.vehicle.vehicle_id if candidate.vehicle else None,
@@ -590,3 +598,82 @@ def _why(prediction: Prediction) -> Why | None:
             for f in prediction.explanation.factors
         ],
     )
+
+
+@router.get("/stops/{stop_id}/odds", response_model=StopOddsResponse, tags=["stops"])
+def stop_odds(stop_id: str, db: DbSession) -> StopOddsResponse:
+    """How each line usually runs at the station's platforms: per kind of day and scheduled hour,
+    the share of the last 28 days' arrivals that were more than 3 or 5 minutes late. Counted
+    from recorded arrivals once a night (no model involved)."""
+    is_demo = _is_demo(db)
+    index = stop_index(db, is_demo)
+    stop = index.by_id.get(stop_id)
+    if stop is None:
+        raise HTTPException(status_code=404, detail="Stop not found")
+    platforms = index.station(stop)
+    ids = [platform.id for platform in platforms]
+    ready = not is_demo and is_populated(db)
+    rows = station_odds(db, ids) if ready else []
+    routes: dict[str, tuple[str, str]] = {}
+    for route_id, short, _, mode in lines_at(db, ids, is_demo):
+        routes.setdefault(short, (route_id, mode))  # two routes of one name: keep the first
+    platform_of = {platform.id: platform.platform for platform in platforms}
+    headsigns = _headsigns(db, ids)
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        grouped.setdefault((row["line"], row["stop_id"]), []).append(row)
+    lines = []
+    for (line, platform_id), cells in grouped.items():
+        route_id, mode = routes.get(line, (None, "bus"))
+        lines.append(
+            OddsLine(
+                line=line,
+                route_id=route_id,
+                mode=mode,
+                stop_id=platform_id,
+                platform=platform_of.get(platform_id),
+                headsign=headsigns.get((route_id, platform_id), ""),
+                cells=[
+                    OddsCell(
+                        day_type=cell["day_type"],
+                        hour=cell["hour"],
+                        n=cell["n"],
+                        days=cell["days"],
+                        late3_share=cell["late3"] / cell["n"],
+                        late5_share=cell["late5"] / cell["n"],
+                        early_share=cell["early1"] / cell["n"],
+                        median_s=cell["median_s"],
+                        p90_s=cell["p90_s"],
+                    )
+                    for cell in sorted(cells, key=lambda c: (c["day_type"], c["hour"]))
+                ],
+            )
+        )
+    lines.sort(key=lambda item: (natural_key(item.line), item.platform or "", item.headsign))
+    return StopOddsResponse(
+        stop=_summary(stop),
+        ready=ready,
+        window_days=ODDS_DAYS,
+        first_day=min((row["first_day"] for row in rows), default=None),
+        last_day=max((row["last_day"] for row in rows), default=None),
+        lines=lines,
+    )
+
+
+def _headsigns(db: Session, stop_ids: list[str]) -> dict[tuple[str, str], str]:
+    """Per (route, platform), where most of the line's trips calling there go."""
+    rows = db.execute(
+        text(
+            "SELECT t.route_id, ps.stop_id, t.headsign, count(*) AS trips "
+            "FROM pattern_stops ps JOIN trip_schedules t ON t.pattern_id = ps.pattern_id "
+            "WHERE ps.stop_id = ANY(:ids) AND t.headsign <> '' "
+            "GROUP BY 1, 2, 3"
+        ),
+        {"ids": stop_ids},
+    ).all()
+    best: dict[tuple[str, str], tuple[int, str]] = {}
+    for route_id, stop_id, headsign, trips in rows:
+        key = (route_id, stop_id)
+        if key not in best or trips > best[key][0]:
+            best[key] = (trips, headsign)
+    return {key: headsign for key, (_, headsign) in best.items()}

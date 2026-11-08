@@ -52,7 +52,42 @@ test("the search comes before the map in tab order and touch targets are 44px at
   });
   expect(order.search).toBeGreaterThanOrEqual(0);
   if (order.map >= 0) expect(order.search).toBeLessThan(order.map);
-  for (const locator of [page.locator(".mode-chip"), page.locator(".language-toggle")]) {
+  for (const locator of [page.locator(".layers-button"), page.locator(".language-toggle"), page.locator(".theme-toggle")]) {
     for (const box of await Promise.all((await locator.all()).map((l) => l.boundingBox()))) expect(box?.height).toBeGreaterThanOrEqual(44);
   }
+});
+
+test("the theme follows the system until the visitor picks one, and the pick survives a reload", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  const root = page.locator("html");
+  await expect(root).toHaveAttribute("data-theme", "light");
+  // Set before the app's script ran (no dark first frame), with the browser chrome colour to match.
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#ffffff");
+
+  await page.locator(".theme-toggle").click();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  expect(background).toBe("rgb(16, 18, 20)");
+
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(root).toHaveAttribute("data-theme", "dark"); // a stored pick wins over the system
+});
+
+test("map layers live behind one button, and each switch changes what the map draws", async ({ page }) => {
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  const button = page.locator(".layers-button");
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await button.click();
+  const trams = page.getByRole("checkbox", { name: /Tramwaje|Trams/ });
+  await expect(trams).toBeChecked();
+  await trams.uncheck();
+  await expect(trams).not.toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await expect(button).toBeFocused();
 });

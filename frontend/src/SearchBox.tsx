@@ -5,9 +5,12 @@ import type { StopMatch } from "./types";
 
 type T = (key: TranslationKey) => string;
 
-export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMatch) => void }) {
+export default function SearchBox({ t, onPick, onFocus }: { t: T; onPick: (match: StopMatch) => void; onFocus?: () => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StopMatch[] | null>(null);
+  // The text the shown results answer: while a newer query is on its way they are stale.
+  const [resultsFor, setResultsFor] = useState("");
+  const enterWaiting = useRef(false);
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -20,8 +23,8 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       searchStops(text, controller.signal)
-        .then((response) => { setResults(response.results); setFailed(false); setActive(0); })
-        .catch(() => { if (!controller.signal.aborted) { setResults([]); setFailed(true); } });
+        .then((response) => { setResults(response.results); setResultsFor(text); setFailed(false); setActive(0); })
+        .catch(() => { if (!controller.signal.aborted) { enterWaiting.current = false; setResults([]); setFailed(true); } });
     }, 180);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [query]);
@@ -32,8 +35,18 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
     return () => document.removeEventListener("pointerdown", close);
   }, []);
 
-  const pick = (match: StopMatch) => { setQuery(""); setResults(null); setFailed(false); setOpen(false); onPick(match); };
+  const pick = (match: StopMatch) => { enterWaiting.current = false; setQuery(""); setResults(null); setFailed(false); setOpen(false); onPick(match); };
   const showList = open && results !== null;
+  const fresh = results !== null && resultsFor === query.trim();
+
+  // Enter pressed before the results for the typed text came: pick the first one when they come.
+  useEffect(() => {
+    if (enterWaiting.current && fresh && results?.length) pick(results[0]);
+  });
+
+  useEffect(() => {
+    if (showList) document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [active, showList, listId]);
 
   return (
     <div className="search-box" ref={box}>
@@ -48,10 +61,12 @@ export default function SearchBox({ t, onPick }: { t: T; onPick: (match: StopMat
         autoComplete="off"
         placeholder={t("searchPlaceholder")}
         value={query}
-        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
+        onChange={(event) => { enterWaiting.current = false; setQuery(event.target.value); setOpen(true); }}
+        onFocus={() => { setOpen(true); onFocus?.(); }}
+        onBlur={() => { enterWaiting.current = false; }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") { setOpen(false); return; }
+          if (event.key === "Escape") { if (showList) event.preventDefault(); enterWaiting.current = false; setOpen(false); return; }
+          if (event.key === "Enter" && !fresh && query.trim()) { event.preventDefault(); enterWaiting.current = true; return; }
           if (!results?.length) return;
           if (event.key === "ArrowDown") { event.preventDefault(); setActive((active + 1) % results.length); }
           if (event.key === "ArrowUp") { event.preventDefault(); setActive((active - 1 + results.length) % results.length); }

@@ -1,7 +1,9 @@
-import { clock, delayClass, delayText, firstExplained, lineOrder, pausedNoteKey, preciseDelayText } from "./format";
+import { arrivalWindow, clock, delayClass, delayText, firstExplained, lineOrder, pausedNoteKey, preciseDelayText } from "./format";
 import type { LineScope } from "./vehicles";
-import type { TranslationKey } from "./i18n";
+import { countText, type TranslationKey } from "./i18n";
 import type { Polled } from "./usePolled";
+import type { RecentStop } from "./recentStops";
+import { distanceText, type NearbyStop } from "./nearby";
 import type {
   Departure, FeatureCollection, Focus, Language, LineDepartures, LineDetail, NextStop, StopDepartures,
   VehicleDetail,
@@ -21,12 +23,15 @@ interface PanelProps {
   lineScope: LineScope;
   onScope: (scope: LineScope) => void;
   headingCount: number;
-  stats: { routes: number; stops: number; vehicles: number };
   vehicle: Polled<VehicleDetail>;
   onPickLine: (line: LineDepartures) => void;
   onPickVehicle: (vehicleId: string) => void;
-  onBack: () => void;
   onClear: () => void;
+  recentStops: RecentStop[];
+  onPickRecent: (stop: RecentStop) => void;
+  nearby: NearbyStop[];
+  nearbyState: "idle" | "asking" | "denied" | "unavailable" | "ready";
+  onFindNearby: () => void;
 }
 
 function LineChip({ label, mode }: { label: string; mode: string }) {
@@ -62,32 +67,48 @@ function WhyLine({ stop, t, language }: { stop: NextStop; t: T; language: Langua
   );
 }
 
+/**
+ * Small delay on a departure: the delay itself ("+2 min"), not "on time", so the predicted and
+ * the timetable clock next to it never seem to disagree. Coloured like the map legend.
+ */
+function RowDelay({ seconds, t }: { seconds: number | null; t: T }) {
+  if (seconds === null) return <span className="delay-badge unknown">{t("scheduledShort")}</span>;
+  const kind = delayClass(seconds);
+  // Whole minutes, cut like the clocks beside it: 30 s late shows the same time as the timetable.
+  const minutes = Math.trunc(seconds / 60);
+  const text = minutes === 0 ? t("delayOnTime") : delayText(minutes * 60, t("min"));
+  return <span className={`delay-badge ${kind}`} title={t("onTimeHint")}>{text}</span>;
+}
+
 function DepartureRow({ departure, language, t }: { departure: Departure; language: Language; t: T }) {
   const expected = departure.predicted_at ?? departure.scheduled_at;
+  // The window only where the model answered; elsewhere the current delay carried forward.
+  const window = departure.live ? arrivalWindow(departure.scheduled_at, departure.lower_delay_seconds, departure.upper_delay_seconds, language) : null;
   return (
     <li className="departure-row">
-      <span className="departure-minutes">{inMinutes(departure, t)}</span>
+      <span className={`departure-minutes ${departure.minutes === 0 ? "is-now" : ""}`}>{inMinutes(departure, t)}</span>
       <span className="departure-main">
         <strong>{departure.headsign || "—"}</strong>
-        <small>
-          {clock(expected, language)}
-          {departure.live && departure.predicted_at && <> · {t("scheduled")} {clock(departure.scheduled_at, language)}</>}
-          {departure.platform && <> · {t("platform")} {departure.platform}</>}
+        <small className="meta">
+          {window
+            ? <span className="forecast" title={t("forecastHint")}><span className="sr-only">{t("forecast")}: </span>{window}</span>
+            : <span>{clock(expected, language)}</span>}
+          {departure.live && departure.predicted_at && <span>{t("scheduled")} {clock(departure.scheduled_at, language)}</span>}
+          {departure.platform && <span>{t("platform")} {departure.platform}</span>}
         </small>
       </span>
-      {departure.live ? <DelayBadge seconds={departure.delay_seconds} t={t}/> : <span className="delay-badge unknown">{t("scheduled")}</span>}
+      {departure.live ? <RowDelay seconds={departure.delay_seconds} t={t}/> : <span className="delay-badge unknown">{t("scheduledShort")}</span>}
     </li>
   );
 }
 
-function Header({ kicker, title, subtitle, onBack, backLabel, onClear, t, chip }: {
-  kicker: string; title: string; subtitle?: string; onBack?: () => void; backLabel?: string; onClear: () => void; t: T; chip?: React.ReactNode;
+function Header({ kicker, title, subtitle, onClear, t, chip }: {
+  kicker: string; title: string; subtitle?: string; onClear: () => void; t: T; chip?: React.ReactNode;
 }) {
   return (
     <div className="panel-head">
-      {onBack && <button className="back-button" onClick={onBack}>← {backLabel}</button>}
       <div className="panel-title">
-        <div><span className="section-kicker">{kicker}</span><h2>{chip}{title}</h2>{subtitle && <p className="panel-sub">{subtitle}</p>}</div>
+        <div><span className="section-kicker">{kicker}</span><h2 tabIndex={-1}>{chip}{title}</h2>{subtitle && <p className="panel-sub">{subtitle}</p>}</div>
         <button className="panel-close" onClick={onClear} aria-label={t("clear")} title={t("clear")}>×</button>
       </div>
     </div>
@@ -105,37 +126,65 @@ function ErrorNote({ error, fallback, t, onRetry }: { error: Error | null; fallb
   );
 }
 
+/** One row per line and direction: a line serves a stop both ways, from different platforms. */
+interface DirectionRow { key: string; line: LineDepartures; headsign: string; departures: Departure[] }
+
+function directionRows(lines: LineDepartures[]): DirectionRow[] {
+  const rows: DirectionRow[] = [];
+  for (const line of lines) {
+    const byHeadsign = new Map<string, Departure[]>();
+    for (const departure of line.departures) {
+      const list = byHeadsign.get(departure.headsign) ?? [];
+      list.push(departure);
+      byHeadsign.set(departure.headsign, list);
+    }
+    for (const [headsign, departures] of byHeadsign) {
+      rows.push({ key: `${line.route_id}|${headsign}`, line, headsign, departures });
+    }
+  }
+  // A fixed order (line number, then direction): sorting by the next departure moved rows
+  // under the pointer at every refresh.
+  return rows.sort((a, b) => lineOrder(a.line.line, b.line.line) || a.headsign.localeCompare(b.headsign, "pl"));
+}
+
 function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps) {
   const data = stop.data;
-  const lines = data ? [...data.lines] : [];
-  const withTimes = lines.filter((line) => line.departures.length > 0);
-  const without = lines.filter((line) => line.departures.length === 0).sort((a, b) => lineOrder(a.line, b.line));
+  const lines = data ? data.lines : [];
+  const rows = directionRows(lines);
+  const idle = lines.filter((line) => line.departures.length === 0).sort((a, b) => lineOrder(a.line, b.line));
+  const running = lines.length - idle.length;
   return (
     <>
       <Header kicker={t("stopKicker")} title={data?.stop.name ?? focus.stopName ?? ""} onClear={onClear} t={t}
-        subtitle={data ? `${data.platforms.length} ${t("platforms")} · ${data.lines.length} ${t("activeLines")}` : undefined}/>
+        subtitle={data ? `${countText(data.platforms.length, "platform", language)} · ${countText(running, "activeLine", language)}` : undefined}/>
       <ErrorNote error={stop.error} fallback={t("stopError")} t={t} onRetry={stop.retry}/>
       {stop.loading && !data && <div className="skeleton-list" aria-hidden="true"><i/><i/><i/></div>}
       {data && data.data_mode === "demo" && <p className="panel-note">{t("demoNoTimetable")}</p>}
-      {data && <>
-        <div className="section-line"><span className="section-kicker">{t("linesAtStop")}</span>{data.live_vehicles > 0 && <span className="live-count"><i/>{data.live_vehicles} {t("liveCount")}</span>}</div>
-        <ul className="line-list">
-          {[...withTimes, ...without].map((line) => (
-            <li key={line.route_id}>
-              <button className="line-row" onClick={() => onPickLine(line)} aria-label={`${line.line} ${line.long_name}`}>
-                <span className="line-row-head"><LineChip label={line.line} mode={line.mode}/><span className="line-name">{line.departures[0]?.headsign || line.long_name}</span><span className="chevron" aria-hidden="true">›</span></span>
-                {line.departures.length > 0
-                  ? <span className="chip-row">{line.departures.slice(0, 4).map((departure) => (
-                      <span key={departure.trip_id + departure.stop_id} className={`time-chip ${departure.live ? delayClass(departure.delay_seconds) : "scheduled"}`}
-                        title={`${clock(departure.scheduled_at, language)} ${t("scheduled")}`}>
-                        <b>{inMinutes(departure, t)}</b>
-                        {departure.live && departure.delay_seconds !== null && <small>{delayText(departure.delay_seconds, t("min"))}</small>}
-                      </span>))}</span>
-                  : <span className="no-departures">{t("noDepartures")}</span>}
+      {data && lines.length === 0 && <p className="panel-note">{t("stopNoLines")}</p>}
+      {data && lines.length > 0 && <>
+        <div className="section-line"><h3 className="section-kicker">{t("linesAtStop")}</h3>{data.live_vehicles > 0 && <span className="live-count"><i/>{data.live_vehicles} {t("liveCount")}</span>}</div>
+        {rows.length > 0 && <ul className="line-list">
+          {rows.map((row) => (
+            <li key={row.key}>
+              <button className="line-row" onClick={() => onPickLine(row.line)} aria-label={`${row.line.line} → ${row.headsign}`}>
+                <span className="line-row-head"><LineChip label={row.line.line} mode={row.line.mode}/><span className="line-name">→ {row.headsign || row.line.long_name}</span><span className="chevron" aria-hidden="true">›</span></span>
+                <span className="chip-row">{row.departures.slice(0, 4).map((departure) => (
+                  <span key={departure.trip_id + departure.stop_id} className={`time-chip ${departure.live ? delayClass(departure.delay_seconds) : "scheduled"}`}
+                    title={`${clock(departure.scheduled_at, language)} ${t("scheduled")}`}>
+                    <b>{inMinutes(departure, t)}</b>
+                    {departure.live && departure.delay_seconds !== null && Math.trunc(departure.delay_seconds / 60) !== 0 && <small>{delayText(Math.trunc(departure.delay_seconds / 60) * 60, t("min"))}</small>}
+                  </span>))}</span>
               </button>
             </li>
           ))}
-        </ul>
+        </ul>}
+        {rows.length === 0 && <p className="panel-note">{t("noDepartures")}</p>}
+        {idle.length > 0 && <details className="idle-lines">
+          <summary>{countText(idle.length, "idleLine", language)}</summary>
+          <ul className="idle-list">{idle.map((line) => (
+            <li key={line.route_id}><button className="idle-line" onClick={() => onPickLine(line)} aria-label={`${line.line} ${line.long_name}`}><LineChip label={line.line} mode={line.mode}/></button></li>
+          ))}</ul>
+        </details>}
         <p className="estimate-note">{t("estimateNote")}</p>
       </>}
     </>
@@ -143,7 +192,7 @@ function StopView({ language, t, stop, onPickLine, onClear, focus }: PanelProps)
 }
 
 function LineView(props: PanelProps) {
-  const { language, t, focus, stop, line, lineVehicles, allLineVehicles, lineScope, onScope, headingCount, onPickVehicle, onBack, onClear } = props;
+  const { language, t, focus, stop, line, lineVehicles, allLineVehicles, lineScope, onScope, headingCount, onPickVehicle, onClear } = props;
   const detail = line.data;
   const here = stop.data?.lines.find((item) => item.route_id === focus.lineId || item.line === focus.lineLabel);
   const vehicles = (lineVehicles?.features ?? []).map((feature) => ({
@@ -156,7 +205,6 @@ function LineView(props: PanelProps) {
   return (
     <>
       <Header kicker={t("lineKicker")} title={detail?.long_name ?? ""} onClear={onClear} t={t}
-        onBack={focus.stopId ? onBack : undefined} backLabel={`${t("backToStop")}${focus.stopName ? `: ${focus.stopName}` : ""}`}
         chip={<LineChip label={detail?.line ?? focus.lineLabel ?? ""} mode={detail?.mode ?? "bus"}/>}/>
       {focus.stopId && (
         <div className="scope-switch" role="group" aria-label={t("vehicleScope")}>
@@ -174,10 +222,10 @@ function LineView(props: PanelProps) {
         </section>
       )}
       {here && here.departures.length > 0 && <>
-        <div className="section-line"><span className="section-kicker">{t("lineDeparturesHere")} {focus.stopName}</span></div>
+        <div className="section-line"><h3 className="section-kicker">{t("lineDeparturesHere")} {focus.stopName}</h3></div>
         <ul className="departure-list">{here.departures.slice(0, 4).map((departure) => <DepartureRow key={departure.trip_id} departure={departure} language={language} t={t}/>)}</ul>
       </>}
-      <div className="section-line"><span className="section-kicker">{t("lineVehicles")} · {vehicles.length}</span>{mean !== null && <span className="mean-delay">{t("meanDelayNow")}: <DelayBadge seconds={mean} t={t}/></span>}</div>
+      <div className="section-line"><h3 className="section-kicker">{t("lineVehicles")} · {vehicles.length}</h3>{mean !== null && <span className="mean-delay">{t("meanDelayNow")}: <DelayBadge seconds={mean} t={t}/></span>}</div>
       {vehicles.length === 0 && lineVehicles && <p className="panel-note">{lineScope === "stop" ? `${t("noneHeadingHere")} ${focus.stopName ?? ""}.` : t("noLineVehicles")}</p>}
       <ul className="vehicle-list">{vehicles.map((vehicle) => (
         <li key={vehicle.id}><button className="vehicle-row" onClick={() => onPickVehicle(String(vehicle.id))}><span className="vehicle-id">{vehicle.label}</span><DelayBadge seconds={vehicle.delay} t={t}/><span className="chevron" aria-hidden="true">›</span></button></li>
@@ -187,7 +235,7 @@ function LineView(props: PanelProps) {
   );
 }
 
-function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProps) {
+function VehicleView({ language, t, vehicle, onClear }: PanelProps) {
   const data = vehicle.data;
   const messages: Record<VehicleDetail["status"], TranslationKey | null> = {
     ok: null, layover: "statusLayover", off_route: "statusOffRoute", no_schedule: "statusNoSchedule", stale: "statusStale",
@@ -195,9 +243,8 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
   const message = data ? messages[data.status] : null;
   return (
     <>
-      <Header kicker={t("vehicleKicker")} title={data ? `${data.line}${data.headsign ? ` → ${data.headsign}` : ""}` : focus.lineLabel ?? ""}
+      <Header kicker={t("vehicleKicker")} title={data ? (data.headsign ? `→ ${data.headsign}` : `${t("stepLineTitle")} ${data.line}`) : t("stepVehicleTitle")}
         subtitle={data?.label ? `#${data.label}` : undefined} onClear={onClear} t={t}
-        onBack={onBack} backLabel={`${t("backToLine")} ${focus.lineLabel ?? ""}`}
         chip={data ? <LineChip label={data.line} mode={data.mode}/> : undefined}/>
       <ErrorNote error={vehicle.error} fallback={t("lineError")} t={t} onRetry={vehicle.retry}/>
       {vehicle.loading && !data && <div className="skeleton-list" aria-hidden="true"><i/><i/></div>}
@@ -206,7 +253,7 @@ function VehicleView({ language, t, focus, vehicle, onBack, onClear }: PanelProp
           <small>{t("updated")} {data.age_seconds} {t("secondsAgo")}</small></div>
         {message && <p className="panel-note">{t(message)}</p>}
         {data.next_stops.length > 0 && <>
-          <div className="section-line"><span className="section-kicker">{t("nextStops")}</span></div>
+          <div className="section-line"><h3 className="section-kicker">{t("nextStops")}</h3></div>
           <ol className="stop-timeline">{data.next_stops.map((stop) => (
             <li key={stop.sequence}>
               <span className="timeline-dot"/>
@@ -231,17 +278,33 @@ export default function Panel(props: PanelProps) {
   if (focus.vehicleId) return <VehicleView {...props}/>;
   if (focus.lineId) return <LineView {...props}/>;
   if (focus.stopId) return <StopView {...props}/>;
-  const { stats } = props;
+  const { recentStops, onPickRecent, nearby, nearbyState, onFindNearby, language } = props;
+  const nearbyNote: Partial<Record<PanelProps["nearbyState"], TranslationKey>> = {
+    asking: "nearbyAsking", denied: "nearbyDenied", unavailable: "nearbyUnavailable",
+  };
+  const note = nearbyNote[nearbyState];
   return (
     <div className="idle-panel">
-      <span className="section-kicker">{t("idleKicker")}</span>
-      <h2>{t("idleTitle")}</h2>
-      <p>{t("idleBody")}</p>
-      <dl className="net-stats">
-        <div><dt>{t("activeLines")}</dt><dd>{stats.routes || "—"}</dd></div>
-        <div><dt>{t("stops")}</dt><dd>{stats.stops || "—"}</dd></div>
-        <div><dt>{t("vehicles")}</dt><dd>{stats.vehicles || "—"}</dd></div>
-      </dl>
+      <h2 tabIndex={-1}>{t("idleTitle")}</h2>
+      <p className="idle-lede">{t("idleBody")}</p>
+      <button type="button" className="nearby-button" onClick={onFindNearby} disabled={nearbyState === "asking"}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/><circle cx="12" cy="12" r="7.5"/></svg>
+        {t("nearbyButton")}
+      </button>
+      {note && <p className="panel-note" role="status">{t(note)}</p>}
+      {nearbyState === "ready" && nearby.length === 0 && <p className="panel-note" role="status">{t("nearbyNone")}</p>}
+      {nearby.length > 0 && <>
+        <div className="section-line"><h3 className="section-kicker">{t("nearbyTitle")}</h3></div>
+        <ul className="recent-list">{nearby.map((item) => (
+          <li key={item.id}><button type="button" className="recent-row" onClick={() => onPickRecent(item)}><span>{item.name}</span><span className="row-meta">{distanceText(item.distanceM, language)}</span></button></li>
+        ))}</ul>
+      </>}
+      {recentStops.length > 0 && <>
+        <div className="section-line"><h3 className="section-kicker">{t("recentStops")}</h3></div>
+        <ul className="recent-list">{recentStops.map((item) => (
+          <li key={item.id}><button type="button" className="recent-row" onClick={() => onPickRecent(item)}><span>{item.name}</span><span className="chevron" aria-hidden="true">›</span></button></li>
+        ))}</ul>
+      </>}
     </div>
   );
 }

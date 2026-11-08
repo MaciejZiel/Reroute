@@ -202,6 +202,32 @@ def main() -> int:
         "--since", help="UTC time (ISO 8601); default: the last arrival the model was trained on"
     )
     frozen.add_argument("--out", type=Path, help="also write the table to this markdown file")
+    frozen.add_argument(
+        "--moment-every",
+        type=positive_seconds,
+        metavar="SECONDS",
+        help="simulate one prediction per this many seconds of a trip's life (default 60); "
+        "use the training run's value (240 or more) on several days of data",
+    )
+    frozen.add_argument(
+        "--per-day",
+        type=positive_rounds,
+        metavar="N",
+        help="score at most N random predictions per Warsaw day (all by default); "
+        "25000 keeps a week of data to minutes instead of hours",
+    )
+    decide = commands.add_parser(
+        "evaluate-decisions",
+        help="simulate passengers who follow the model's advice against persistence and the "
+        "timetable, on arrivals after the model's training window",
+    )
+    decide.add_argument("--model", type=Path, default=Path("models/delay_model.json"))
+    decide.add_argument("--events", type=Path, required=True)
+    decide.add_argument("--observations", type=Path)
+    decide.add_argument("--since", help="UTC time (ISO 8601); default: the model's last arrival")
+    decide.add_argument("--out", type=Path, help="also write the table to this markdown file")
+    decide.add_argument("--moment-every", type=positive_seconds, metavar="SECONDS")
+    decide.add_argument("--per-day", type=positive_rounds, metavar="N")
     cred = commands.add_parser(
         "credibility",
         help="add the ridge comparison and the interval calibration to the stored model's card",
@@ -232,13 +258,38 @@ def main() -> int:
         print("\n".join(problems) or "folds identical to the training run")
         print((args.report_dir / "results.md").read_text(encoding="utf-8"))
         return 0
+    if args.command == "evaluate-decisions":
+        require_libraries("numpy")
+        from . import decision
+        from .frozen import parse_utc
+
+        result = decision.evaluate_decisions(
+            args.model,
+            args.events,
+            args.observations,
+            parse_utc(args.since) if args.since else None,
+            args.moment_every,
+            args.per_day,
+        )
+        table = decision.render(result)
+        print(table)
+        if args.out:
+            args.out.write_text(table, encoding="utf-8")
+        return 0
     if args.command == "evaluate-frozen":
         require_libraries("numpy")
         from . import frozen as frozen_check
 
         since = frozen_check.parse_utc(args.since) if args.since else None
         text = frozen_check.render(
-            frozen_check.evaluate_frozen(args.model, args.events, args.observations, since)
+            frozen_check.evaluate_frozen(
+                args.model,
+                args.events,
+                args.observations,
+                since,
+                moment_every_s=args.moment_every,
+                per_day=args.per_day,
+            )
         )
         print(text)
         if args.out:

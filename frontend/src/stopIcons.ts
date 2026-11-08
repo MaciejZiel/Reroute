@@ -1,9 +1,5 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
-
-export const BUS_COLOR = "#6fd9b6";
-export const TRAM_COLOR = "#ff8d74";
-const INK = "#0e1413";
-const SELECTED = "#ffd466";
+import type { MapPalette } from "./theme";
 
 export type StopKind = "bus" | "tram" | "both";
 export const STOP_KINDS: StopKind[] = ["bus", "tram", "both"];
@@ -21,21 +17,24 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   ctx.closePath();
 }
 
-function glyph(ctx: CanvasRenderingContext2D, kind: StopKind, cx: number, cy: number) {
-  ctx.fillStyle = INK;
-  ctx.strokeStyle = INK;
+// On gold (a picked stop) the glyph is always dark ink; on a mode colour it is the theme's ink for that colour.
+const INK = "#0e1413";
+
+function glyph(ctx: CanvasRenderingContext2D, kind: StopKind, cx: number, cy: number, ink: string, window: string) {
+  ctx.fillStyle = ink;
+  ctx.strokeStyle = ink;
   ctx.lineWidth = 1.6;
   ctx.lineCap = "round";
   if (kind === "tram") {
     roundedRect(ctx, cx - 5, cy - 3.5, 10, 9, 2);
     ctx.fill();
     ctx.beginPath(); ctx.moveTo(cx - 3, cy - 3.5); ctx.lineTo(cx, cy - 7); ctx.lineTo(cx + 3, cy - 3.5); ctx.stroke(); // pantograph
-    ctx.fillStyle = "#fff"; ctx.fillRect(cx - 3.5, cy - 1.5, 7, 2.6); // window band
+    ctx.fillStyle = window; ctx.fillRect(cx - 3.5, cy - 1.5, 7, 2.6); // window band
   } else if (kind === "bus") {
     roundedRect(ctx, cx - 5.5, cy - 5.5, 11, 10.5, 2.4);
     ctx.fill();
-    ctx.fillStyle = "#fff"; ctx.fillRect(cx - 4, cy - 3.8, 8, 3.2); // windscreen
-    ctx.fillStyle = INK; ctx.fillRect(cx - 4.2, cy + 4, 2.4, 2.2); ctx.fillRect(cx + 1.8, cy + 4, 2.4, 2.2); // wheels
+    ctx.fillStyle = window; ctx.fillRect(cx - 4, cy - 3.8, 8, 3.2); // windscreen
+    ctx.fillStyle = ink; ctx.fillRect(cx - 4.2, cy + 4, 2.4, 2.2); ctx.fillRect(cx + 1.8, cy + 4, 2.4, 2.2); // wheels
   } else {
     // Both modes: two stacked bars, the shorthand for "several services".
     roundedRect(ctx, cx - 5.5, cy - 5.5, 11, 4.6, 1.6); ctx.fill();
@@ -43,8 +42,8 @@ function glyph(ctx: CanvasRenderingContext2D, kind: StopKind, cx: number, cy: nu
   }
 }
 
-/** Draw one stop icon: a rounded tile in the mode colour(s) with a dark outline and a small vehicle glyph. */
-export function drawStopIcon(kind: StopKind, selected: boolean): ImageData {
+/** Draw one stop icon: a rounded tile in the mode colour(s) with an outline and a small vehicle glyph. */
+export function drawStopIcon(kind: StopKind, selected: boolean, palette: MapPalette): ImageData {
   const canvas = document.createElement("canvas");
   canvas.width = SIZE * RATIO;
   canvas.height = SIZE * RATIO;
@@ -55,32 +54,34 @@ export function drawStopIcon(kind: StopKind, selected: boolean): ImageData {
   const size = SIZE - pad * 2;
   ctx.save();
   roundedRect(ctx, pad, pad, size, size, 7);
-  ctx.fillStyle = selected ? SELECTED : kind === "tram" ? TRAM_COLOR : BUS_COLOR;
+  ctx.fillStyle = selected ? palette.picked : kind === "tram" ? palette.tram : palette.bus;
   ctx.fill();
   if (kind === "both" && !selected) {
     ctx.clip();
-    ctx.fillStyle = TRAM_COLOR;
+    ctx.fillStyle = palette.tram;
     ctx.beginPath(); ctx.moveTo(SIZE, 0); ctx.lineTo(SIZE, SIZE); ctx.lineTo(0, SIZE); ctx.closePath(); ctx.fill();
   }
   ctx.restore();
   roundedRect(ctx, pad, pad, size, size, 7);
   ctx.lineWidth = selected ? 3 : 2;
-  ctx.strokeStyle = selected ? "#ffffff" : INK;
+  ctx.strokeStyle = selected ? palette.pickedOutline : palette.outline;
   ctx.stroke();
-  glyph(ctx, kind, SIZE / 2, SIZE / 2 + 0.5);
+  const fill = selected ? palette.picked : kind === "tram" ? palette.tram : palette.bus;
+  if (selected) glyph(ctx, kind, SIZE / 2, SIZE / 2 + 0.5, INK, "#ffffff");
+  else glyph(ctx, kind, SIZE / 2, SIZE / 2 + 0.5, palette.onMode, fill);
   return ctx.getImageData(0, 0, SIZE * RATIO, SIZE * RATIO);
 }
 
 /** A wedge pointing up and sitting outside the vehicle dot; rotated by the bearing it shows the heading. */
-export function drawHeadingWedge(): ImageData {
+export function drawHeadingWedge(palette: MapPalette): ImageData {
   const size = 96;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2D canvas is not available");
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = INK;
+  ctx.fillStyle = palette.wedge;
+  ctx.strokeStyle = palette.halo;
   ctx.lineWidth = 3;
   ctx.lineJoin = "round";
   ctx.beginPath(); ctx.moveTo(48, 5); ctx.lineTo(58, 21); ctx.lineTo(38, 21); ctx.closePath();
@@ -92,12 +93,14 @@ export function stopIconId(kind: StopKind, selected = false) {
   return `stop-${kind}${selected ? "-selected" : ""}`;
 }
 
-export function registerIcons(map: MapLibreMap) {
+/** Add the icons, or redraw them in place for a new palette (same size, so updateImage applies). */
+export function registerIcons(map: MapLibreMap, palette: MapPalette) {
+  const put = (id: string, image: ImageData, pixelRatio: number) => {
+    if (map.hasImage(id)) map.updateImage(id, image);
+    else map.addImage(id, image, { pixelRatio });
+  };
   for (const kind of STOP_KINDS) {
-    for (const selected of [false, true]) {
-      const id = stopIconId(kind, selected);
-      if (!map.hasImage(id)) map.addImage(id, drawStopIcon(kind, selected), { pixelRatio: RATIO });
-    }
+    for (const selected of [false, true]) put(stopIconId(kind, selected), drawStopIcon(kind, selected, palette), RATIO);
   }
-  if (!map.hasImage("heading")) map.addImage("heading", drawHeadingWedge(), { pixelRatio: 2 });
+  put("heading", drawHeadingWedge(palette), 2);
 }

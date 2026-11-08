@@ -19,10 +19,12 @@ ml-train:
 ml-test:
 	cd backend && pytest -q -rs tests/test_ml_*.py
 
-# Score the committed model, unchanged, on arrivals after its training window (run make ml-pull first).
+# Score the committed model, unchanged, on arrivals after its training window (run make ml-pull first):
+# one prediction per 4 minutes of each trip, at most 25,000 per Warsaw day, with a table per day.
 ml-frozen:
 	cd backend && python -m ml evaluate-frozen --events ../$(DATA)/arrival_events.csv \
-		--observations ../$(DATA)/observations.csv --out ../docs/ml/frozen_check.md
+		--observations ../$(DATA)/observations.csv --moment-every 240 --per-day 25000 \
+		--out ../docs/ml/frozen_check.md
 
 # Regenerate the committed golden fixtures of the evaluator tests (needs the training libraries).
 ml-fixtures:

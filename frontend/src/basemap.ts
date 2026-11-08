@@ -1,24 +1,13 @@
-import type { LayerSpecification, StyleSpecification } from "maplibre-gl";
+import type { LayerSpecification, Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
+import type { BasemapPalette } from "./theme";
 
 /**
- * A calm dark basemap drawn from OpenFreeMap's public vector tiles (OpenMapTiles schema).
+ * A calm basemap (dark or light, see theme.ts) drawn from OpenFreeMap's public vector tiles (OpenMapTiles schema).
  * OpenFreeMap needs no API key and has no request limits; attribution is required and is
  * shown by the map's attribution control. Roads, water and parks are kept as quiet shapes so
  * the transit layers carry the contrast; there are no POI icons and street names appear only
  * when zoomed in far.
  */
-export const BASEMAP = {
-  background: "#111918",
-  water: "#0a1217",
-  park: "#14211d",
-  building: "#1a2523",
-  roadMinor: "#27332f",
-  roadMajor: "#33423d",
-  roadMotorway: "#364642",
-  label: "#8d9a93",
-  labelStrong: "#b4bfb8",
-} as const;
-
 const FONT_REGULAR = ["Noto Sans Regular"];
 const FONT_BOLD = ["Noto Sans Bold"];
 
@@ -29,7 +18,7 @@ const road = (id: string, classes: string[], color: string, widths: [number, num
   paint: { "line-color": color, "line-width": ["interpolate", ["exponential", 1.4], ["zoom"], 10, widths[0], 14, widths[1], 18, widths[2]] },
 });
 
-const layers: LayerSpecification[] = [
+const buildLayers = (BASEMAP: BasemapPalette): LayerSpecification[] => [
   { id: "background", type: "background", paint: { "background-color": BASEMAP.background } },
   { id: "park", type: "fill", source: "tiles", "source-layer": "park", paint: { "fill-color": BASEMAP.park } },
   { id: "grass", type: "fill", source: "tiles", "source-layer": "landcover", filter: ["in", ["get", "class"], ["literal", ["grass", "wood"]]], paint: { "fill-color": BASEMAP.park, "fill-opacity": 0.7 } },
@@ -59,7 +48,7 @@ const layers: LayerSpecification[] = [
   },
 ];
 
-export const basemapStyle: StyleSpecification = {
+export const basemapStyle = (palette: BasemapPalette): StyleSpecification => ({
   version: 8,
   glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
   sources: {
@@ -70,5 +59,13 @@ export const basemapStyle: StyleSpecification = {
         '<a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">© OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
     },
   },
-  layers,
-};
+  layers: buildLayers(palette),
+});
+
+/** Recolour the basemap of a running map in place (a new style would drop the transit layers). */
+export function applyBasemap(map: MapLibreMap, palette: BasemapPalette) {
+  for (const layer of buildLayers(palette)) {
+    if (!map.getLayer(layer.id) || !("paint" in layer) || !layer.paint) continue;
+    for (const [property, value] of Object.entries(layer.paint)) map.setPaintProperty(layer.id, property as keyof typeof layer.paint, value as never);
+  }
+}

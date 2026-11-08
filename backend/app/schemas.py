@@ -1,6 +1,6 @@
 """Stable API response and request shapes."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -93,6 +93,14 @@ class Departure(BaseModel):
         description="Scheduled time plus the live delay; null without a live vehicle."
     )
     delay_seconds: int | None
+    lower_delay_seconds: int | None = Field(
+        default=None,
+        description="Low end of the model's 80% range; only when the model answered for this stop.",
+    )
+    upper_delay_seconds: int | None = Field(
+        default=None, description="High end of the model's 80% range, as lower_delay_seconds."
+    )
+    model_status: Literal["model", "held", "paused", "out_of_range", "passed"] | None = None
     minutes: int = Field(description="Whole minutes until the expected time, never negative.")
     live: bool
     vehicle_id: str | None
@@ -267,3 +275,36 @@ class ModelCardResponse(BaseModel):
     serving_range: dict | None = None
     features: list[str] = Field(default_factory=list)
     limits: list[str] = Field(default_factory=list)
+
+
+class OddsCell(BaseModel):
+    """Recorded arrivals of one line at one platform, on one kind of day, in one scheduled hour."""
+
+    day_type: Literal["weekday", "saturday", "sunday"]
+    hour: int = Field(description="Scheduled hour, Warsaw time (0 to 23).")
+    n: int = Field(description="Recorded arrivals.")
+    days: int = Field(description="Service days they come from.")
+    late3_share: float = Field(description="Share more than 3 minutes late.")
+    late5_share: float = Field(description="Share more than 5 minutes late.")
+    early_share: float = Field(description="Share more than 1 minute early.")
+    median_s: int = Field(description="Typical delay in seconds (median).")
+    p90_s: int = Field(description="Delay exceeded by 1 arrival in 10, in seconds.")
+
+
+class OddsLine(BaseModel):
+    line: str
+    route_id: str | None
+    mode: str
+    stop_id: str
+    platform: str | None
+    headsign: str = Field(description="Where most trips of the line go from this platform.")
+    cells: list[OddsCell]
+
+
+class StopOddsResponse(BaseModel):
+    stop: StopSummary
+    ready: bool = Field(description="False until the nightly count has run for the first time.")
+    window_days: int
+    first_day: date | None
+    last_day: date | None
+    lines: list[OddsLine]

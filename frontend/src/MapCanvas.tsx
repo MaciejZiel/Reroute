@@ -1,27 +1,25 @@
 import { useEffect, useRef } from "react";
 import { AttributionControl, Map as MapLibreMap, NavigationControl, setWorkerUrl, type GeoJSONSource, type MapMouseEvent } from "maplibre-gl";
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import { basemapStyle } from "./basemap";
-import { BUS_COLOR, registerIcons, TRAM_COLOR } from "./stopIcons";
+import { applyBasemap, basemapStyle } from "./basemap";
+import { registerIcons } from "./stopIcons";
+import { MAP_PALETTES, type MapPalette, type Theme } from "./theme";
 import { anyMoved, interpolate, positions } from "./vehicles";
 import type { FeatureCollection, LineDetail, StopSummary } from "./types";
 
 setWorkerUrl(mapWorkerUrl);
 
-const MODE_COLOR = ["match", ["get", "mode"], "tram", TRAM_COLOR, BUS_COLOR] as const;
+const modeColor = (p: MapPalette) => ["match", ["get", "mode"], "tram", p.tram, p.bus] as never;
 // Routes are context, not content: quiet until the map is zoomed in, and hairlines at city scale.
-const ROUTE_COLOR = ["match", ["get", "mode"], "tram", "#c9705c", "#4f9f87"] as const;
+const routeColor = (p: MapPalette) => ["match", ["get", "mode"], "tram", p.routeTram, p.routeBus] as never;
 // Same limits as the punctuality view: early below -60 s, late above 180 s.
-const DELAY_COLOR = [
+const delayColor = (p: MapPalette) => [
   "case",
-  ["==", ["get", "delay_seconds"], null], "#9aa69f",
-  [">", ["get", "delay_seconds"], 180], "#ffa24d",
-  ["<", ["get", "delay_seconds"], -60], "#8ea2ff",
-  "#3fd69b",
-] as const;
-const INK = "#0e1413";
-const HALO = "#0e1413";
-const TEXT = "#e9eee9";
+  ["==", ["get", "delay_seconds"], null], p.delay.unknown,
+  [">", ["get", "delay_seconds"], 180], p.delay.late,
+  ["<", ["get", "delay_seconds"], -60], p.delay.early,
+  p.delay.onTime,
+] as never;
 const FONT_BOLD = ["Noto Sans Bold"];
 const FONT = ["Noto Sans Regular"];
 
@@ -30,7 +28,8 @@ export const STOP_MIN_ZOOM = 13.5;
 const TWEEN_MS = 1_200;
 const TWEEN_MAX_VEHICLES = 150;
 
-export interface MapRequest<T> { value: T; nonce: number }
+/** keepZoom: only bring the point into view, leaving the zoom the visitor chose. */
+export interface MapRequest<T> { value: T; nonce: number; keepZoom?: boolean }
 export type VehicleLook = "dense" | "focus";
 
 interface MapCanvasProps {
@@ -49,6 +48,7 @@ interface MapCanvasProps {
   onVehicle: (vehicleId: string) => void;
   onZoomedOut: (zoomedOut: boolean) => void;
   label: string;
+  theme: Theme;
 }
 
 const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
@@ -58,10 +58,10 @@ function sheetInset() {
   return window.innerWidth <= 820 ? Math.round(window.innerHeight * 0.46) : 0;
 }
 
-/** Space the search box and chips cover at the top of the map on a phone, where they span its width. */
+/** Space the layers button covers at the top of the map, so a fitted route starts below it. */
 function overlayInset(container: HTMLElement | null) {
-  if (window.innerWidth > 820 || !container) return 90;
-  const overlay = container.closest(".map-stage")?.querySelector(".map-overlay");
+  if (!container) return 90;
+  const overlay = container.closest(".map-stage")?.querySelector(".map-layers");
   if (!overlay) return 90;
   return Math.max(90, Math.round(overlay.getBoundingClientRect().bottom - container.getBoundingClientRect().top) + 24);
 }
@@ -81,7 +81,7 @@ export default function MapCanvas(props: MapCanvasProps) {
     if (!containerRef.current) return;
     const map = new MapLibreMap({
       container: containerRef.current,
-      style: basemapStyle,
+      style: basemapStyle(MAP_PALETTES[latest.current.theme].basemap),
       center: [21.013, 52.228],
       zoom: 12,
       minZoom: 9,
@@ -92,14 +92,20 @@ export default function MapCanvas(props: MapCanvasProps) {
     });
     map.touchZoomRotate.disableRotation();
     map.addControl(new NavigationControl({ showCompass: false }), "top-right");
-    map.addControl(new AttributionControl(), "bottom-right");
+    // On a phone the attribution is the "i" button: spelled out it took two lines over the sheet.
+    const compact = window.innerWidth <= 820;
+    map.addControl(new AttributionControl({ compact }), "bottom-right");
+    if (compact) map.once("load", () => containerRef.current?.querySelector(".maplibregl-compact-show")?.classList.remove("maplibregl-compact-show"));
     let zoomedOut = map.getZoom() < STOP_MIN_ZOOM;
     map.on("zoom", () => {
       const now = map.getZoom() < STOP_MIN_ZOOM;
       if (now !== zoomedOut) { zoomedOut = now; latest.current.onZoomedOut(now); }
     });
     map.on("load", () => {
-      registerIcons(map);
+      // The theme may have changed while the style was loading: recolour the basemap to the current one.
+      const p = MAP_PALETTES[latest.current.theme];
+      applyBasemap(map, p.basemap);
+      registerIcons(map, p);
       map.addSource("network", { type: "geojson", data: empty });
       map.addSource("vehicles", { type: "geojson", data: empty });
       map.addSource("focus", { type: "geojson", data: empty });
@@ -110,7 +116,7 @@ export default function MapCanvas(props: MapCanvasProps) {
         filter: ["==", ["get", "entity_type"], "route"],
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": ROUTE_COLOR as never,
+          "line-color": routeColor(p),
           "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 14, 1.8, 17, 4],
           "line-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.1, 13, 0.22, 15, 0.36],
         },
@@ -118,12 +124,12 @@ export default function MapCanvas(props: MapCanvasProps) {
       map.addLayer({
         id: "focus-line-casing", type: "line", source: "focus", filter: ["==", ["geometry-type"], "LineString"],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": INK, "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 15, 12] },
+        paint: { "line-color": p.halo, "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 15, 12] },
       });
       map.addLayer({
         id: "focus-line", type: "line", source: "focus", filter: ["==", ["geometry-type"], "LineString"],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": MODE_COLOR as never, "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 7] },
+        paint: { "line-color": modeColor(p), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 7] },
       });
       map.addLayer({
         id: "stops", type: "symbol", source: "network", minzoom: STOP_MIN_ZOOM,
@@ -139,7 +145,7 @@ export default function MapCanvas(props: MapCanvasProps) {
         id: "stop-names", type: "symbol", source: "network", minzoom: 16,
         filter: ["==", ["get", "entity_type"], "stop"],
         layout: { "text-field": ["get", "name"], "text-font": FONT, "text-size": 12, "text-anchor": "top", "text-offset": [0, 1.1], "text-max-width": 8, "text-optional": true },
-        paint: { "text-color": TEXT, "text-halo-color": HALO, "text-halo-width": 1.6 },
+        paint: { "text-color": p.text, "text-halo-color": p.halo, "text-halo-width": 1.6 },
       });
       map.addLayer({
         id: "focus-stops", type: "symbol", source: "focus", minzoom: 11.5, filter: ["==", ["geometry-type"], "Point"],
@@ -152,7 +158,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       map.addLayer({
         id: "focus-stop-names", type: "symbol", source: "focus", minzoom: 14.5, filter: ["==", ["geometry-type"], "Point"],
         layout: { "text-field": ["get", "name"], "text-font": FONT, "text-size": 12, "text-anchor": "top", "text-offset": [0, 1.1], "text-max-width": 8, "text-optional": true },
-        paint: { "text-color": TEXT, "text-halo-color": HALO, "text-halo-width": 1.6 },
+        paint: { "text-color": p.text, "text-halo-color": p.halo, "text-halo-width": 1.6 },
       });
       map.addLayer({
         id: "picked-stops", type: "symbol", source: "picked", filter: ["==", ["get", "kind"], "platform"],
@@ -161,7 +167,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       map.addLayer({
         id: "picked-names", type: "symbol", source: "picked", filter: ["==", ["get", "kind"], "label"],
         layout: { "text-field": ["get", "name"], "text-font": FONT_BOLD, "text-size": 14, "text-anchor": "bottom", "text-offset": [0, -1.2], "text-max-width": 9, "text-allow-overlap": true },
-        paint: { "text-color": "#fff2c9", "text-halo-color": HALO, "text-halo-width": 2.2 },
+        paint: { "text-color": p.pickedText, "text-halo-color": p.halo, "text-halo-width": 2.2 },
       });
       map.addLayer({
         id: "vehicle-heading", type: "symbol", source: "vehicles",
@@ -174,8 +180,8 @@ export default function MapCanvas(props: MapCanvasProps) {
       map.addLayer({
         id: "vehicles", type: "circle", source: "vehicles",
         paint: {
-          "circle-color": MODE_COLOR as never,
-          "circle-stroke-color": DELAY_COLOR as never,
+          "circle-color": modeColor(p),
+          "circle-stroke-color": delayColor(p),
           "circle-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.45, 1],
           "circle-stroke-opacity": ["case", ["boolean", ["get", "is_stale"], false], 0.5, 1],
         },
@@ -186,7 +192,7 @@ export default function MapCanvas(props: MapCanvasProps) {
       });
       map.addLayer({
         id: "vehicle-selected", type: "circle", source: "vehicles", filter: ["==", ["get", "id"], ""],
-        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 12, 15, 19], "circle-color": "rgba(255,255,255,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 12, 15, 19], "circle-color": "rgba(255,255,255,0)", "circle-stroke-color": p.selectedRing, "circle-stroke-width": 2.5 },
       });
       ready.current = true;
       syncAll(map, latest.current, stopModes.current);
@@ -246,7 +252,8 @@ export default function MapCanvas(props: MapCanvasProps) {
   useEffect(() => { const map = mapRef.current; if (map && ready.current) syncFocus(map, focusLine); }, [focusLine]);
   useEffect(() => { const map = mapRef.current; if (map && ready.current) syncPicked(map, picked, stopModes.current); }, [picked]);
   useEffect(() => { const map = mapRef.current; if (map && ready.current) applyFilters(map, showBuses, showTrams, selectedVehicleId); }, [showBuses, showTrams, selectedVehicleId]);
-  useEffect(() => { const map = mapRef.current; if (map && ready.current) applyVehicleLook(map, vehicleLook); }, [vehicleLook]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) applyVehicleLook(map, vehicleLook, MAP_PALETTES[latest.current.theme]); }, [vehicleLook]);
+  useEffect(() => { const map = mapRef.current; if (map && ready.current) applyPalette(map, MAP_PALETTES[props.theme], latest.current.vehicleLook); }, [props.theme]);
   useEffect(() => {
     const map = mapRef.current;
     if (map && fit) map.fitBounds(fit.value, { padding: { top: overlayInset(containerRef.current), bottom: 70 + sheetInset(), left: 50, right: 50 }, maxZoom: 15, duration: 800 });
@@ -254,7 +261,7 @@ export default function MapCanvas(props: MapCanvasProps) {
   }, [fit?.nonce]);
   useEffect(() => {
     const map = mapRef.current;
-    if (map && flyTo) map.easeTo({ center: flyTo.value, zoom: Math.max(map.getZoom(), 15), duration: 700, offset: [0, -sheetInset() / 2] });
+    if (map && flyTo) map.easeTo({ center: flyTo.value, zoom: flyTo.keepZoom ? map.getZoom() : Math.max(map.getZoom(), 15), duration: 700, offset: [0, -sheetInset() / 2] });
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs on the request nonce / data identity only
   }, [flyTo?.nonce]);
 
@@ -349,7 +356,7 @@ function applyFilters(map: MapLibreMap, showBuses: boolean, showTrams: boolean, 
  * Many vehicles (the whole city) are small unlabelled dots with names only when zoomed in;
  * a single line's vehicles are large, carry their line number and show where they head.
  */
-function applyVehicleLook(map: MapLibreMap, look: VehicleLook) {
+function applyVehicleLook(map: MapLibreMap, look: VehicleLook, p: MapPalette) {
   if (!map.getLayer("vehicles")) return;
   const focus = look === "focus";
   map.setPaintProperty("vehicles", "circle-radius", focus
@@ -362,8 +369,8 @@ function applyVehicleLook(map: MapLibreMap, look: VehicleLook) {
   map.setLayoutProperty("vehicle-labels", "text-offset", focus ? [0, 0] : [0, 1.2]);
   map.setLayoutProperty("vehicle-labels", "text-allow-overlap", focus);
   map.setLayoutProperty("vehicle-labels", "text-optional", true);
-  map.setPaintProperty("vehicle-labels", "text-color", focus ? INK : TEXT);
-  map.setPaintProperty("vehicle-labels", "text-halo-color", HALO);
+  map.setPaintProperty("vehicle-labels", "text-color", focus ? p.onMode : p.text);
+  map.setPaintProperty("vehicle-labels", "text-halo-color", p.halo);
   map.setPaintProperty("vehicle-labels", "text-halo-width", focus ? 0 : 1.6);
 }
 
@@ -374,5 +381,24 @@ function syncAll(map: MapLibreMap, props: MapCanvasProps, modes: Map<string, str
   syncFocus(map, props.focusLine);
   syncPicked(map, props.picked, modes);
   applyFilters(map, props.showBuses, props.showTrams, props.selectedVehicleId);
-  applyVehicleLook(map, props.vehicleLook);
+  applyVehicleLook(map, props.vehicleLook, MAP_PALETTES[props.theme]);
+}
+
+/** Recolour everything for a theme change, keeping sources, filters and the camera. */
+function applyPalette(map: MapLibreMap, p: MapPalette, look: VehicleLook) {
+  applyBasemap(map, p.basemap);
+  registerIcons(map, p);
+  map.setPaintProperty("focus-line-casing", "line-color", p.halo);
+  map.setPaintProperty("focus-line", "line-color", modeColor(p));
+  map.setPaintProperty("routes", "line-color", routeColor(p));
+  for (const id of ["stop-names", "focus-stop-names"]) {
+    map.setPaintProperty(id, "text-color", p.text);
+    map.setPaintProperty(id, "text-halo-color", p.halo);
+  }
+  map.setPaintProperty("picked-names", "text-color", p.pickedText);
+  map.setPaintProperty("picked-names", "text-halo-color", p.halo);
+  map.setPaintProperty("vehicles", "circle-color", modeColor(p));
+  map.setPaintProperty("vehicles", "circle-stroke-color", delayColor(p));
+  map.setPaintProperty("vehicle-selected", "circle-stroke-color", p.selectedRing);
+  applyVehicleLook(map, look, p);
 }
