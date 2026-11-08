@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import csv
 import math
-from bisect import bisect_right
+import sys
+from array import array
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -34,6 +35,9 @@ EVENT_COLUMNS = (
 def load_events(path: Path) -> list[Event]:
     """Read the CSV written by ``ml/pull.sh`` (a ``COPY`` of ``stop_arrival_events``)."""
     events = []
+    # Trip, stop and line ids repeat on many rows: one shared string each instead of a copy per row
+    # (several GB on ten days of Warsaw data).
+    intern = sys.intern
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         missing = set(EVENT_COLUMNS) - set(reader.fieldnames or ())
@@ -43,10 +47,10 @@ def load_events(path: Path) -> list[Event]:
             actual = datetime.fromisoformat(row["actual_at"]).timestamp()
             events.append(
                 Event(
-                    trip_id=row["trip_id"],
+                    trip_id=intern(row["trip_id"]),
                     stop_seq=int(row["stop_seq"]),
-                    stop_id=row["stop_id"],
-                    line=row["line"],
+                    stop_id=intern(row["stop_id"]),
+                    line=intern(row["line"]),
                     scheduled_s=datetime.fromisoformat(row["scheduled_at"]).timestamp(),
                     actual_s=actual,
                     delay_s=int(row["delay_s"]),
@@ -116,8 +120,13 @@ class Observations:
 
     MAX_AGE_S = MAX_VEHICLE_AGE_S
 
-    def __init__(self, rows: dict[str, tuple[list[float], list[int]]]) -> None:
-        self.rows = rows
+    def __init__(self, rows: dict[str, tuple[Sequence[float], Sequence[int]]]) -> None:
+        # One pair of arrays per trip: tens of millions of reports as Python lists of floats and
+        # ints take several times the memory.
+        self.rows: dict[str, tuple[np.ndarray, np.ndarray]] = {
+            trip: (np.asarray(times, dtype=np.float64), np.asarray(delays, dtype=np.int32))
+            for trip, (times, delays) in rows.items()
+        }
 
     @property
     def newest(self) -> float | None:
@@ -128,16 +137,38 @@ class Observations:
     def load(cls, path: Path, until: float | None = None) -> Observations:
         """Read the CSV written by ``ml/pull.sh`` (trip_id, observed_at, delay_s); with ``until``
         (epoch seconds) only reports made up to then, as at the time the data was pulled."""
-        rows: dict[str, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
+        chunks: dict[str, list[tuple[np.ndarray, np.ndarray]]] = defaultdict(list)
+        trip, times, delays = None, array("d"), array("i")
+
+        def close() -> None:
+            if trip is not None and times:
+                chunks[trip].append(
+                    (np.array(times, dtype=np.float64), np.array(delays, dtype=np.int32))
+                )
+
         with open(path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 observed = datetime.fromisoformat(row["observed_at"]).timestamp()
                 if until is not None and observed > until:
                     continue
-                times, delays = rows[row["trip_id"]]
+                if row["trip_id"] != trip:
+                    close()
+                    trip, times, delays = row["trip_id"], array("d"), array("i")
                 times.append(observed)
                 delays.append(int(row["delay_s"]))
-        return cls(dict(rows))
+        close()
+        # Rows can come in any order: the runs of one trip are merged once, at the end, and
+        # sorted by time (merging on every run would be quadratic for interleaved rows).
+        rows: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for trip_id, parts in chunks.items():
+            if len(parts) == 1:
+                rows[trip_id] = parts[0]
+                continue
+            merged_t = np.concatenate([t for t, _ in parts])
+            merged_d = np.concatenate([d for _, d in parts])
+            order = np.argsort(merged_t, kind="stable")
+            rows[trip_id] = (merged_t[order], merged_d[order])
+        return cls(rows)
 
     def latest(self, trip_id: str, moment: float) -> tuple[float, float]:
         """(delay, age in seconds) of the newest observation of the trip at or before ``moment``;
@@ -146,7 +177,7 @@ class Observations:
         if series is None:
             return math.nan, math.nan
         times, delays = series
-        i = bisect_right(times, moment) - 1
+        i = int(np.searchsorted(times, moment, side="right")) - 1
         if i < 0 or moment - times[i] > self.MAX_AGE_S:
             return math.nan, math.nan
         return float(delays[i]), moment - times[i]
@@ -183,6 +214,8 @@ def build_samples(
     observations: Observations | None = None,
     seed: int = 1,
     moment_every_s: float = MOMENT_EVERY_S,
+    index: EventIndex | None = None,
+    trips: Sequence[str] | None = None,
 ) -> Samples:
     """Simulate predictions the way the server makes them.
 
@@ -191,8 +224,11 @@ def build_samples(
     are given, no vehicle delay fresher than ``MAX_VEHICLE_AGE_S``) are skipped. Each target stop
     ``lag`` stops after the origin that has not been reached yet becomes a sample. Features see
     only arrivals known at the moment.
+
+    ``trips`` limits the samples to those trips while features still see every event; with a
+    prebuilt ``index`` of the same events, a long recording can be processed a day at a time.
     """
-    index = EventIndex(events)
+    index = index if index is not None else EventIndex(events)
     wanted = set(lags)
     rng = np.random.default_rng(seed)
     # Columns are turned into arrays one trip at a time: a list of millions of Python floats
@@ -202,9 +238,10 @@ def build_samples(
     }
     trip_ids, lines, stops = [], [], []
     trip_numbers: dict[str, int] = {}
-    for trip_id, trip_events in index.by_trip.items():
+    chosen = index.by_trip.items() if trips is None else ((t, index.by_trip[t]) for t in trips)
+    for trip_id, trip_events in chosen:
         rows: list[list[float]] = []
-        y, t0s, target_times, trips, lag_col = [], [], [], [], []
+        y, t0s, target_times, trip_col, lag_col = [], [], [], [], []
         for moment in _moments(index, trip_id, observations, rng, moment_every_s):
             known = known_trip_events(index, trip_id, moment)
             if not known:
@@ -226,7 +263,7 @@ def build_samples(
                 y.append(target.delay_s)
                 t0s.append(moment)
                 target_times.append(target.actual_s)
-                trips.append(trip_numbers.setdefault(trip_id, len(trip_numbers)))
+                trip_col.append(trip_numbers.setdefault(trip_id, len(trip_numbers)))
                 lag_col.append(lag)
                 trip_ids.append(trip_id)
                 lines.append(target.line)
@@ -236,7 +273,7 @@ def build_samples(
             blocks["y"].append(np.array(y, dtype=np.float64))
             blocks["t0"].append(np.array(t0s))
             blocks["target"].append(np.array(target_times))
-            blocks["trip"].append(np.array(trips))
+            blocks["trip"].append(np.array(trip_col))
             blocks["lag"].append(np.array(lag_col))
 
     def column(name: str) -> np.ndarray:
@@ -254,6 +291,26 @@ def build_samples(
         line=lines,
         stop_id=stops,
         lag=column("lag"),
+    )
+
+
+def concat_samples(parts: Sequence[Samples]) -> Samples:
+    """One Samples from several (trip numbers are offset so they stay distinct)."""
+    offset, trip_numbers = 0, []
+    for part in parts:
+        trip_numbers.append(part.trip + offset)
+        offset += int(part.trip.max()) + 1 if len(part) else 0
+    width = len(FEATURE_NAMES)
+    return Samples(
+        X=np.concatenate([p.X for p in parts]) if parts else np.empty((0, width)),
+        y_delay=np.concatenate([p.y_delay for p in parts]) if parts else np.array([]),
+        t0=np.concatenate([p.t0 for p in parts]) if parts else np.array([]),
+        target_s=np.concatenate([p.target_s for p in parts]) if parts else np.array([]),
+        trip=np.concatenate(trip_numbers) if parts else np.array([]),
+        trip_id=[t for p in parts for t in p.trip_id],
+        line=[t for p in parts for t in p.line],
+        stop_id=[t for p in parts for t in p.stop_id],
+        lag=np.concatenate([p.lag for p in parts]) if parts else np.array([]),
     )
 
 

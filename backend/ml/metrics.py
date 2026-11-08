@@ -71,6 +71,37 @@ class ClusterBootstrap:
         fraction of the baseline's, on the same resampled trips."""
         base, model = self._per_group(baseline_abs), self._per_group(model_abs)
         point = 1 - model.sum() / base.sum()
-        boot = 1 - (self.draws @ model) / (self.draws @ base)
+        drawn = self.draws @ base
+        # A resample with no baseline error at all (a tiny day) has no ratio: left out, as in mean.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            boot = np.where(
+                drawn > 0, 1 - (self.draws @ model) / np.where(drawn > 0, drawn, 1), np.nan
+            )
+        low, high = _percentiles(boot)
+        return Interval(float(point), low, high)
+
+    def relative_mean_cut(
+        self,
+        baseline: np.ndarray,
+        baseline_mask: np.ndarray,
+        model: np.ndarray,
+        model_mask: np.ndarray,
+    ) -> Interval:
+        """How much smaller the model's mean of ``model`` over ``model_mask`` is than the
+        baseline's mean over its own mask, as a fraction: for averages over different subsets of
+        the same samples (such as the wait of the passengers who caught the vehicle)."""
+        sums = [self._per_group(baseline, baseline_mask), self._per_group(model, model_mask)]
+        counts = [
+            self._per_group(np.ones(len(baseline)), baseline_mask),
+            self._per_group(np.ones(len(model)), model_mask),
+        ]
+        point = 1 - (sums[1].sum() / counts[1].sum()) / (sums[0].sum() / counts[0].sum())
+        with np.errstate(invalid="ignore", divide="ignore"):
+            means = [
+                (self.draws @ total) / (self.draws @ count)
+                for total, count in zip(sums, counts, strict=True)
+            ]
+            boot = 1 - means[1] / means[0]
+        boot = np.where(np.isfinite(boot), boot, np.nan)
         low, high = _percentiles(boot)
         return Interval(float(point), low, high)
