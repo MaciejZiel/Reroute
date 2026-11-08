@@ -47,6 +47,10 @@ export interface Departure {
   scheduled_at: string;
   predicted_at: string | null;
   delay_seconds: number | null;
+  /** The model's 80% range; only when the model answered for this stop. */
+  lower_delay_seconds?: number | null;
+  upper_delay_seconds?: number | null;
+  model_status?: "model" | "held" | "paused" | "out_of_range" | "passed" | null;
   minutes: number;
   live: boolean;
   vehicle_id: string | null;
@@ -207,4 +211,37 @@ export interface ModelCard {
   calibration_by_horizon: CardCoverage[];
   calibration_by_hour: CardCoverage[];
   serving_range: { max_stops_ahead?: number } | null;
+}
+
+export type DayType = "weekday" | "saturday" | "sunday";
+
+export interface OddsCell {
+  day_type: DayType;
+  hour: number;
+  n: number;
+  days: number;
+  late3_share: number;
+  late5_share: number;
+  early_share: number;
+  median_s: number;
+  p90_s: number;
+}
+
+export interface OddsLine {
+  line: string;
+  route_id: string | null;
+  mode: string;
+  stop_id: string;
+  platform: string | null;
+  headsign: string;
+  cells: OddsCell[];
+}
+
+export interface StopOdds {
+  stop: { id: string; name: string; latitude: number; longitude: number; platform?: string | null };
+  ready: boolean;
+  window_days: number;
+  first_day: string | null;
+  last_day: string | null;
+  lines: OddsLine[];
 }

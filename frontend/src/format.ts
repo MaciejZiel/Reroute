@@ -43,6 +43,18 @@ export function delayText(seconds: number, minuteLabel: string): string {
   return `${minutes > 0 ? "+" : "−"}${Math.abs(minutes)} ${minuteLabel}`;
 }
 
+/**
+ * The arrival window the model gives, as clock times: "20:39–20:42", or one time when both ends
+ * fall in the same minute; null without a range (no model answer for this stop).
+ */
+export function arrivalWindow(scheduledIso: string, lower: number | null | undefined, upper: number | null | undefined, language: Language): string | null {
+  if (lower == null || upper == null) return null;
+  const base = new Date(scheduledIso).getTime();
+  const from = clock(new Date(base + lower * 1000).toISOString(), language);
+  const to = clock(new Date(base + upper * 1000).toISOString(), language);
+  return from === to ? from : `${from}–${to}`;
+}
+
 export function clock(iso: string, language: Language): string {
   return new Intl.DateTimeFormat(language === "pl" ? "pl-PL" : "en-GB", {
     hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw",

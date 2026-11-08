@@ -26,6 +26,13 @@ function CoverageRow({ row, nominal, language, label, t }: { row: CardCoverage; 
   );
 }
 
+/** "5 Nov, 12:00–18:00" within one day, "5 Nov 12:00 – 6 Nov 11:58" across days. */
+function span(window: { from: string; to: string }, language: Language): string {
+  const from = warsawDate(window.from, language), to = warsawDate(window.to, language);
+  const start = warsawClock(window.from, language), end = warsawClock(window.to, language);
+  return from === to ? `${from}, ${start}–${end}` : `${from} ${start} – ${to} ${end}`;
+}
+
 export default function ModelPanel({ language, t, onClose }: { language: Language; t: T; onClose: () => void }) {
   const [card, setCard] = useState<ModelCard | null>(null);
   const [error, setError] = useState(false);
@@ -41,30 +48,27 @@ export default function ModelPanel({ language, t, onClose }: { language: Languag
   const nominal = card?.interval_nominal ?? 0.8;
   const hours = card ? hoursByWindow(card.calibration_by_hour) : { heldOut: [], tuned: [] };
   const trained = card?.training_window;
-  const sameDay = Boolean(trained && warsawDate(trained.from, language) === warsawDate(trained.to, language));
   const gain = card?.gain_vs_best_baseline;
   const trees = scores.find(({ key }) => key === "predTrees")?.score;
 
   return (
     <section className="punctuality-panel model-panel" aria-label={t("modelTitle")}>
       <header className="punctuality-head">
-        <div><span className="section-kicker">{t("modelKicker")}</span><h2>{t("modelTitle")}</h2></div>
+        <div><span className="section-kicker">{t("modelKicker")}</span><h2 tabIndex={-1}>{t("modelTitle")}</h2></div>
         <button className="panel-close" onClick={onClose} aria-label={t("close")}>×</button>
       </header>
       {error && <p className="form-error" role="status">{t("modelLoadError")}</p>}
       {!card && !error && <p className="no-alternatives">{t("loading")}</p>}
       {card?.status === "baseline" && <p className="no-alternatives">{t("modelBaselineOnly")}</p>}
       {card?.status === "model" && <>
-        <p className="model-lede">{t("modelOneEvening")}</p>
+        <p className="model-lede">{t("modelLede")}</p>
         <dl className="model-facts">
           <div><dt>{t("modelVersion")}</dt><dd>{card.version}</dd></div>
-          {trained && <div><dt>{t("modelTrainedOn")}</dt><dd>
-            {sameDay ? warsawDate(trained.from, language) : `${warsawDate(trained.from, language)} – ${warsawDate(trained.to, language)}`}, {warsawClock(trained.from, language)}–{warsawClock(trained.to, language)}
-          </dd></div>}
+          {trained && <div><dt>{t("modelTrainedOn")}</dt><dd>{span(trained, language)}</dd></div>}
           {card.data?.arrivals ? <div><dt>{t("modelRecorded")}</dt><dd>
             {card.data.arrivals.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelArrivals")}, {card.data.trips?.toLocaleString(language === "pl" ? "pl-PL" : "en-GB")} {t("modelTrips")}
           </dd></div> : null}
-          {card.test_window && <div><dt>{t("modelTestWindow")}</dt><dd>{warsawDate(card.test_window.from, language)}, {warsawClock(card.test_window.from, language)}–{warsawClock(card.test_window.to, language)}</dd></div>}
+          {card.test_window && <div><dt>{t("modelTestWindow")}</dt><dd>{span(card.test_window, language)}</dd></div>}
         </dl>
 
         {scores.length > 0 && <>

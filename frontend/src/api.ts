@@ -4,6 +4,7 @@ import type {
   ModelCard,
   PunctualityResult,
   StopDepartures,
+  StopOdds,
   StopSearchResponse,
   VehicleDetail,
 } from "./types";
@@ -41,3 +42,4 @@ export const fetchLineVehicles = (line: string, signal?: AbortSignal) => getJson
 // Vehicle ids contain slashes (V/9/032) and the route takes them as a path, so only encode the parts.
 export const fetchVehicle = (id: string, language: string, signal?: AbortSignal) => getJson<VehicleDetail>(`vehicles/${id.split("/").map(enc).join("/")}?lang=${language}`, signal);
 export const fetchModel = (signal?: AbortSignal) => getJson<ModelCard>("model", signal);
+export const fetchOdds = (stopId: string, signal?: AbortSignal) => getJson<StopOdds>(`stops/${enc(stopId)}/odds`, signal);

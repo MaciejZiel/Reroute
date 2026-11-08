@@ -12,8 +12,10 @@ function percent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
-function signedMinutes(value: number) {
-  return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+/** "+0,8" in Polish, "+0.8" in English: one decimal, the sign always shown for a delay. */
+function signedMinutes(value: number, language: Language) {
+  const text = value.toLocaleString(language === "pl" ? "pl-PL" : "en-GB", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return `${value > 0 ? "+" : ""}${text.replace("-", "−")}`;
 }
 
 function DelayTrend({ line, language, t }: { line: LinePunctuality; language: Language; t: T }) {
@@ -49,7 +51,7 @@ function DelayTrend({ line, language, t }: { line: LinePunctuality; language: La
         {[high, 0, low].filter((value, index, all) => all.indexOf(value) === index).map((value) => (
           <g key={value}>
             <line x1={pad.left} x2={width - pad.right} y1={y(value)} y2={y(value)} className={value === 0 ? "trend-zero" : "trend-grid"} />
-            <text x={pad.left - 5} y={y(value) + 3} textAnchor="end">{signedMinutes(value)}</text>
+            <text x={pad.left - 5} y={y(value) + 3} textAnchor="end">{signedMinutes(value, language)}</text>
           </g>
         ))}
         <text x={pad.left} y={height - 5}>{clock.format(start)}</text>
@@ -60,7 +62,7 @@ function DelayTrend({ line, language, t }: { line: LinePunctuality; language: La
           <circle cx={x(times[hover])} cy={y(active.mean_delay_minutes)} r={4} className="trend-dot" />
         </g>}
       </svg>
-      <p className="trend-readout">{active ? `${clock.format(new Date(active.observed_at))} · ${signedMinutes(active.mean_delay_minutes)} ${t("minutes")} · ${percent(active.on_time_share)} ${t("onTime").toLowerCase()} · ${active.vehicles} ${t("vehicles")}` : t("trendHint")}</p>
+      <p className="trend-readout">{active ? `${clock.format(new Date(active.observed_at))} · ${signedMinutes(active.mean_delay_minutes, language)} ${t("minutes")} · ${percent(active.on_time_share)} ${t("onTime").toLowerCase()} · ${active.vehicles} ${t("vehicles")}` : t("trendHint")}</p>
     </figure>
   );
 }
@@ -93,7 +95,7 @@ export default function Punctuality({ language, t, onClose }: { language: Langua
   return (
     <section className="punctuality-panel" aria-label={t("punctualityTitle")}>
       <header className="punctuality-head">
-        <div><span className="section-kicker">{t("punctualityKicker")}</span><h2>{t("punctualityTitle")}</h2></div>
+        <div><span className="section-kicker">{t("punctualityKicker")}</span><h2 tabIndex={-1}>{t("punctualityTitle")}</h2></div>
         <button className="panel-close" onClick={onClose} aria-label={t("close")}>×</button>
       </header>
       <div className="punctuality-toolbar">
@@ -110,15 +112,15 @@ export default function Punctuality({ language, t, onClose }: { language: Langua
         <ul className="punctuality-bars">
           {lines.map((line) => (
             <li key={`${line.mode}-${line.line}`}>
-              <button className={`bar-row ${focus?.line === line.line ? "selected" : ""}`} onClick={() => setSelected(line.line)} onPointerEnter={() => setHovered(line.line)} onPointerLeave={() => setHovered(null)} aria-label={`${line.line}: ${percent(line.on_time_share)} ${t("onTime")}, ${percent(line.late_share)} ${t("late")}, ${signedMinutes(line.mean_delay_minutes)} min`}>
+              <button className={`bar-row ${focus?.line === line.line ? "selected" : ""}`} onClick={() => setSelected(line.line)} onPointerEnter={() => setHovered(line.line)} onPointerLeave={() => setHovered(null)} aria-label={`${line.line}: ${percent(line.on_time_share)} ${t("onTime")}, ${percent(line.late_share)} ${t("late")}, ${signedMinutes(line.mean_delay_minutes, language)} min`}>
                 <span className={`route-chip ${line.mode}`}>{line.line}</span>
                 <span className="bar-track">
                   {line.early_share > 0 && <i className="seg-early" style={{ width: percent(line.early_share) }}/>}
                   {line.on_time_share > 0 && <i className="seg-on-time" style={{ width: percent(line.on_time_share) }}/>}
                   {line.late_share > 0 && <i className="seg-late" style={{ width: percent(line.late_share) }}/>}
                 </span>
-                <span className="bar-value">{signedMinutes(line.mean_delay_minutes)}<small> min</small></span>
-                {hovered === line.line && <span className="bar-tooltip" role="tooltip">{percent(line.early_share)} {t("early").toLowerCase()} · {percent(line.on_time_share)} {t("onTime").toLowerCase()} · {percent(line.late_share)} {t("late").toLowerCase()}<br/>{t("median")} {signedMinutes(line.median_delay_minutes)} min · {line.observations} {t("observations")}</span>}
+                <span className="bar-value">{signedMinutes(line.mean_delay_minutes, language)}<small> min</small></span>
+                {hovered === line.line && <span className="bar-tooltip" role="tooltip">{percent(line.early_share)} {t("early").toLowerCase()} · {percent(line.on_time_share)} {t("onTime").toLowerCase()} · {percent(line.late_share)} {t("late").toLowerCase()}<br/>{t("median")} {signedMinutes(line.median_delay_minutes, language)} min · {line.observations} {t("observations")}</span>}
               </button>
             </li>
           ))}
@@ -126,7 +128,7 @@ export default function Punctuality({ language, t, onClose }: { language: Langua
         {data && data.lines.length > MAX_LINES && <small className="punctuality-more">{data.lines.length - MAX_LINES} {t("moreLines")}</small>}
         {focus && focus.series.length > 1 && <DelayTrend line={focus} language={language} t={t}/>}
       </>}
-      {data && <p className="estimate-note">{data.notice}</p>}
+      {data && <p className="estimate-note">{data.data_mode === "live" ? t("punctualityNotice") : data.notice}</p>}
     </section>
   );
 }

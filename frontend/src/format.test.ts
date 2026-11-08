@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstExplained, pausedNoteKey, preciseDelayText } from "./format";
+import { arrivalWindow, firstExplained, pausedNoteKey, preciseDelayText } from "./format";
 
 describe("preciseDelayText", () => {
   it("keeps the seconds so a one-minute range is not shown as +4 … +5 min", () => {
@@ -28,5 +28,13 @@ describe("pausedNoteKey", () => {
     expect(pausedNoteKey([{ model_status: "model", why: { summary: "x" } }])).toBeNull();
     expect(pausedNoteKey([{ model_status: "held", why: { summary: "x" } }])).toBeNull();
     expect(pausedNoteKey([])).toBeNull();
+  });
+});
+
+describe("arrivalWindow", () => {
+  it("turns the model's range into clock times in Warsaw", () => {
+    expect(arrivalWindow("2026-10-13T12:05:00Z", 60, 240, "pl")).toBe("14:06–14:09");
+    expect(arrivalWindow("2026-10-13T12:05:00Z", 5, 20, "pl")).toBe("14:05");
+    expect(arrivalWindow("2026-10-13T12:05:00Z", null, 240, "pl")).toBeNull();
   });
 });

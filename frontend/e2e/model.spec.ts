@@ -17,7 +17,7 @@ for (const language of LANGUAGES) {
       await expect(panel).toBeVisible();
       await expect(panel).toContainText("20261013-f2a7a97f");
       // how little data, said up front
-      await expect(panel).toContainText(language === "pl" ? "trzech i pół dnia roboczego" : "three and a half weekdays");
+      await expect(panel).toContainText(language === "pl" ? "nagranych dniach" : "recorded days");
       await expect(panel).toContainText(language === "pl" ? "40,6 s" : "40.6 s");
       await expect(panel).toContainText(language === "pl" ? "79,9%" : "79.9%");
       // "Trained on" is the training window only; the unseen minutes are listed on their own line
@@ -35,3 +35,16 @@ for (const language of LANGUAGES) {
     });
   }
 }
+
+test("Escape closes the model panel and gives the focus back to its button", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("reroute-language", "pl"));
+  await mockApi(page, () => vehicleDetail({}));
+  await page.goto("/");
+  const opener = page.getByRole("button", { name: "O modelu" });
+  await opener.click();
+  const panel = page.getByRole("region", { name: "O modelu" });
+  await expect(panel.locator("h2")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
