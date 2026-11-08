@@ -163,7 +163,8 @@ def test_search_finds_stations_without_diacritics_and_splits_distant_namesakes(
     body = client.get("/api/stops", params={"q": "lazienki"}).json()
 
     results = body["results"]
-    assert len(results) == 2  # the 400 m rule: two platforms near each other, one far away
+    # The far namesake has no line calling there (like a metro entrance), so it is not offered.
+    assert len(results) == 1
     near = next(item for item in results if "100101" in item["stop_ids"])
     assert near["stop_ids"] == ["100101", "100102"]
     assert near["lines"] == ["9", "175"]
@@ -481,7 +482,7 @@ def test_network_marks_each_stop_with_the_modes_that_serve_it(client: TestClient
     assert modes["200101"] == "tram"
     assert modes["100102"] == "bus"
     assert modes["300101"] == "both"
-    assert modes["999901"] == "bus"  # no route calls there: falls back to bus
+    assert "999901" not in modes  # no route calls there: not drawn as a stop at all
 
 
 def _snapshots(
@@ -674,3 +675,59 @@ def test_concurrent_first_requests_build_the_network_once(
         thread.join()
 
     assert statuses == [200] * 4 and len(builds) == 1
+
+
+def test_network_answers_304_when_the_browser_has_the_same_version(client: TestClient) -> None:
+    first = client.get("/api/network")
+    etag = first.headers["etag"]
+    again = client.get("/api/network", headers={"If-None-Match": etag})
+    assert again.status_code == 304 and again.content == b""
+    assert again.headers["etag"] == etag
+    changed = client.get("/api/network", headers={"If-None-Match": '"something-else"'})
+    assert changed.status_code == 200 and changed.json()["features"]
+    listed = client.get("/api/network", headers={"If-None-Match": f'"other", W/{etag}'})
+    assert listed.status_code == 304
+
+
+def test_network_gzip_and_plain_bodies_have_different_etags(client: TestClient) -> None:
+    gzipped = client.get("/api/network", headers={"Accept-Encoding": "gzip"})
+    plain = client.get("/api/network", headers={"Accept-Encoding": "identity"})
+    assert gzipped.headers["content-encoding"] == "gzip"
+    assert "content-encoding" not in plain.headers
+    assert gzipped.headers["etag"] != plain.headers["etag"]
+    stale = client.get(
+        "/api/network",
+        headers={"Accept-Encoding": "identity", "If-None-Match": gzipped.headers["etag"]},
+    )
+    assert stale.status_code == 200
+
+
+def test_network_route_coordinates_are_rounded_to_about_a_metre(client: TestClient) -> None:
+    for feature in client.get("/api/network").json()["features"]:
+        if feature["properties"]["entity_type"] != "route":
+            continue
+        geometry = feature["geometry"]
+        lines = (
+            geometry["coordinates"]
+            if geometry["type"] == "MultiLineString"
+            else [geometry["coordinates"]]
+        )
+        for point in (point for line in lines for point in line):
+            assert all(round(value, 5) == value for value in point)
+
+
+def test_platforms_more_than_400_m_apart_are_separate_stations() -> None:
+    from app.stops import StopIndex, StopInfo
+
+    index = StopIndex(
+        [
+            StopInfo("100101", "Łazienki", 52.2, 21.0, False),
+            StopInfo("100102", "Łazienki", 52.2, 21.0001, False),
+            StopInfo("999901", "Łazienki", 52.2, 21.3, False),
+        ]
+    )
+    stations = index.search("lazienki")
+    assert [[stop.id for stop in station] for station in stations] == [
+        ["100101", "100102"],
+        ["999901"],
+    ]

@@ -117,9 +117,11 @@ def stop_index(db: Session, is_demo: bool) -> StopIndex:
         cached = _cache.get(is_demo)
         if cached and cached[0] == version:
             return cached[1]
+        # Only stops a line calls at (see the network view): no metro entrances in the search.
+        served = select(RouteStop.stop_id).distinct()
         rows = db.execute(
             select(Stop.id, Stop.name, Stop.latitude, Stop.longitude).where(
-                Stop.is_demo.is_(is_demo)
+                Stop.is_demo.is_(is_demo), Stop.id.in_(served)
             )
         ).all()
         index = StopIndex([StopInfo(*row, is_demo) for row in rows])

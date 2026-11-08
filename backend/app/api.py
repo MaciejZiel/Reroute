@@ -2,6 +2,7 @@
 
 import csv
 import gzip
+import hashlib
 import io
 import threading
 import time
@@ -55,8 +56,13 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
     )
 
 
-_network_cache: dict[object, tuple[bytes, bytes]] = {}
+_network_cache: dict[object, tuple[bytes, bytes, str]] = {}
 _network_lock = threading.Lock()
+# Route shapes on the overview are faint context lines: simplified to about a metre and rounded to
+# five decimals (about a metre), they shrink the response about four times (2.4 MB to 0.6 MB
+# gzipped for Warsaw) with no visible change. The line view still gets the full shape.
+ROUTE_SIMPLIFY_DEGREES = 1e-5
+COORDINATE_DECIMALS = 5
 
 
 @router.get("/network", response_model=FeatureCollection, tags=["network"])
@@ -70,12 +76,25 @@ def network(request: Request, db: Session = Depends(get_db)) -> Response:
             entry = _network_cache.get(key)
             if entry is None:
                 body = _network_collection(db, has_schedule).model_dump_json().encode()
-                entry = (body, gzip.compress(body, compresslevel=6))
+                etag = '"' + hashlib.sha256(body).hexdigest()[:20] + '"'
+                entry = (body, gzip.compress(body, compresslevel=6), etag)
                 _network_cache.clear()
                 _network_cache[key] = entry
-    body, compressed = entry
-    headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache"}
-    if "gzip" in request.headers.get("accept-encoding", ""):
+    body, compressed, etag = entry
+    gzipped = "gzip" in request.headers.get("accept-encoding", "")
+    # Each encoding is a different representation and gets its own strong validator (RFC 9110),
+    # so a shared cache never answers a client without gzip with the gzipped bytes.
+    if gzipped:
+        etag = etag[:-1] + '-gz"'
+    # no-cache plus an ETag: the browser keeps its copy and asks; an unchanged network costs a 304.
+    headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-cache", "ETag": etag}
+    sent = {
+        tag.strip().removeprefix("W/")
+        for tag in request.headers.get("if-none-match", "").split(",")
+    }
+    if etag in sent or "*" in sent:
+        return Response(status_code=304, headers=headers)
+    if gzipped:
         headers["Content-Encoding"] = "gzip"
         return Response(compressed, media_type="application/json", headers=headers)
     return Response(body, media_type="application/json", headers=headers)
@@ -97,6 +116,25 @@ def _stop_modes(db: Session, is_demo: bool) -> dict[str, str]:
     }
 
 
+def _rounded(geometry: dict) -> dict:
+    """A line geometry with coordinates rounded to COORDINATE_DECIMALS."""
+
+    def line(coordinates) -> list[list[float]]:
+        return [
+            [round(x, COORDINATE_DECIMALS), round(y, COORDINATE_DECIMALS)]
+            for x, y, *_ in coordinates
+        ]
+
+    if geometry["type"] == "LineString":
+        return {"type": "LineString", "coordinates": line(geometry["coordinates"])}
+    if geometry["type"] == "MultiLineString":
+        return {
+            "type": "MultiLineString",
+            "coordinates": [line(part) for part in geometry["coordinates"]],
+        }
+    return geometry
+
+
 def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     demo_filter = not has_schedule
     routes = db.scalars(select(Route).where(Route.is_demo.is_(demo_filter))).all()
@@ -104,7 +142,11 @@ def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
     features = [
         _feature(
             route.id,
-            mapping(to_shape(route.shape)),
+            _rounded(
+                mapping(
+                    to_shape(route.shape).simplify(ROUTE_SIMPLIFY_DEGREES, preserve_topology=False)
+                )
+            ),
             {
                 "entity_type": "route",
                 "route_id": route.id,
@@ -121,9 +163,12 @@ def _network_collection(db: Session, has_schedule: bool) -> FeatureCollection:
         _feature(
             stop.id,
             {"type": "Point", "coordinates": [stop.longitude, stop.latitude]},
-            {"entity_type": "stop", "name": stop.name, "mode": modes.get(stop.id, "bus")},
+            {"entity_type": "stop", "name": stop.name, "mode": modes[stop.id]},
         )
         for stop in stops
+        # Only stops a line calls at: the feed also lists metro entrances and station buildings,
+        # which would show up as bus stops with nothing leaving from them.
+        if stop.id in modes
     )
     metadata = db.get(FeedMetadata, FEED_ID) if has_schedule else None
     notice = _schedule_notice(metadata) if has_schedule else DEMO_NOTICE

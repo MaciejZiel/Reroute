@@ -122,6 +122,12 @@ def test_the_api_serves_the_model_with_an_interval_and_reasons(
     assert vehicle["next_stops"][0]["why"]["summary"]
     assert vehicle["next_stops"][0]["lower_delay_seconds"] is not None
 
+    board = client.get("/api/stops/200101/departures").json()
+    mine = [d for line in board["lines"] for d in line["departures"] if d["trip_id"] == trip]
+    assert mine and mine[0]["model_status"] == "model"
+    assert mine[0]["lower_delay_seconds"] <= mine[0]["delay_seconds"]
+    assert mine[0]["delay_seconds"] <= mine[0]["upper_delay_seconds"]
+
 
 def test_a_trip_without_recorded_stops_falls_back_to_persistence(
     client: TestClient,  # noqa: F811

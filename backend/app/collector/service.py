@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..data_sources import WARSAW_BOUNDS
 from ..models import FeedMetadata
+from ..odds import OddsRefresher
 from . import store, tables
 from .config import Settings
 from .derive import MatchStatus, Observation, PollResult, VehicleState, derive_poll, project
@@ -29,6 +30,23 @@ FEED_ID = "warsaw-static-gtfs"
 UNMATCHED_SHARE = 0.05
 UNMATCHED_POLLS = 15
 UNMATCHED_MIN_VEHICLES = 50
+# A feed that answers 200 but carries no vehicles, or the same old snapshot, records nothing: on
+# 4 November 2026 that went on for 34 hours without a word in the log. Such polls are counted
+# and logged when it starts, every STALE_LOG_EVERY polls while it lasts (about 30 min at 20 s),
+# and when it ends.
+STALE_FEED_AGE_S = 600
+STALE_LOG_EVERY = 90
+
+
+def feed_problem(feed: Feed, now: datetime) -> str | None:
+    """Why a successfully fetched feed is useless for recording, or None when it is fine."""
+    if not feed.vehicles:
+        return "the feed carries no vehicles"
+    if feed.timestamp is not None:
+        age = (now - feed.timestamp).total_seconds()
+        if age > STALE_FEED_AGE_S:
+            return f"the feed snapshot is {age / 60:.0f} min old"
+    return None
 
 
 def to_observations(feed: Feed) -> list[Observation]:
@@ -193,8 +211,10 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
     refresher = ScheduleRefresher(
         settings.schedule_refresh_hours, lambda: schedule_downloaded_at(engine)
     )
-    last_alerts = last_housekeeping = last_rollup = last_schedule_check = 0.0
+    odds = OddsRefresher(engine)
+    last_alerts = last_housekeeping = last_rollup = last_schedule_check = last_odds = 0.0
     unmatched_polls = 0  # polls in a row in which almost no vehicle matched a trip
+    stale_polls = 0  # polls in a row that fetched a feed with nothing new to record
     failures = 0
     with GtfsRtClient() as client:
         while not stop.is_set():
@@ -223,6 +243,18 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
                     metrics.gauge(
                         "feed_age_seconds", (datetime.now(UTC) - feed.timestamp).total_seconds()
                     )
+                problem = feed_problem(feed, datetime.now(UTC))
+                metrics.gauge("feed_stale", 1 if problem else 0)
+                if problem:
+                    stale_polls += 1
+                    metrics.count("polls_stale_total")
+                    if stale_polls == 1 or stale_polls % STALE_LOG_EVERY == 0:
+                        logger.warning(
+                            "nothing to record: %s (%d polls in a row)", problem, stale_polls
+                        )
+                elif stale_polls:
+                    logger.warning("the feed is back after %d stale polls", stale_polls)
+                    stale_polls = 0
                 metrics.success()
                 failures = 0
             except (GtfsRtKitError, OSError) as error:
@@ -261,6 +293,13 @@ def run(engine: Engine, settings: Settings, once: bool = False) -> None:
                         logger.info("dropped expired partitions: %s", ", ".join(dropped))
             except Exception:
                 logger.exception("maintenance step failed")
+            # On its own: a failed check of the nightly count must not skip housekeeping.
+            if not once and now - last_odds >= 600:
+                last_odds = now
+                try:
+                    odds.tick(datetime.now(UTC))
+                except Exception:
+                    logger.exception("checking the delay odds count failed")
             delay = settings.poll_interval_s * (1 if failures == 0 else min(2**failures, 6))
             if once:
                 break
